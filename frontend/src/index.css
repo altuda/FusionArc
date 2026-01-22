@@ -1,0 +1,49 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-gene-a: #3B82F6;
+  --color-gene-b: #10B981;
+  --color-junction: #EF4444;
+}
+
+body {
+  @apply bg-gray-50 text-gray-900 dark:bg-gray-900 dark:text-gray-100;
+}
+
+/* Domain color palette (Viridis-inspired) */
+.domain-color-0 { fill: #440154; }
+.domain-color-1 { fill: #482878; }
+.domain-color-2 { fill: #3E4A89; }
+.domain-color-3 { fill: #31688E; }
+.domain-color-4 { fill: #26828E; }
+.domain-color-5 { fill: #1F9E89; }
+.domain-color-6 { fill: #35B779; }
+.domain-color-7 { fill: #6DCD59; }
+.domain-color-8 { fill: #B4DE2C; }
+.domain-color-9 { fill: #FDE725; }
+
+/* Traffic light indicators */
+.indicator-green { @apply bg-green-500; }
+.indicator-yellow { @apply bg-yellow-500; }
+.indicator-red { @apply bg-red-500; }
+.indicator-gray { @apply bg-gray-400; }
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-gray-200 dark:bg-gray-700;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-gray-400 dark:bg-gray-500 rounded;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-gray-500 dark:bg-gray-400;
+}
