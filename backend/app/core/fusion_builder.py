@@ -1,15 +1,65 @@
+import logging
 from typing import Optional, List, Dict, Any, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.external.ensembl import EnsemblClient
+from app.external.interpro import get_interpro_client
 from app.core.mapping.genomic_to_protein import GenomicToProteinMapper
-from app.models import Gene, Transcript, Protein, Domain, Fusion
+from app.models import Gene, Transcript, Protein, Domain, Fusion, Exon
 from app.schemas.fusion import FusionCreate, DomainInfo
 from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
 
 
 KINASE_KEYWORDS = ["kinase", "Kinase", "Pkinase", "TyrKc", "S_TKc", "STYKc"]
 CACHE_EXPIRY_DAYS = 30
+
+# Normalize source/database names to consistent capitalization
+SOURCE_NAME_MAP = {
+    "pfam": "Pfam",
+    "smart": "SMART",
+    "cdd": "CDD",
+    "superfamily": "SuperFamily",
+    "supfam": "SuperFamily",
+    "gene3d": "Gene3D",
+    "panther": "PANTHER",
+    "prosite": "PROSITE",
+    "prosite_profiles": "PROSITE",
+    "prosite_patterns": "PROSITE",
+    "prints": "PRINTS",
+    "pirsf": "PIRSF",
+    "hamap": "HAMAP",
+    "tigrfams": "TIGRFAMs",
+    "interpro": "InterPro",
+    "uniprot": "UniProt",
+    "mobidb": "MobiDB",
+    "mobidb-lite": "MobiDB",
+    "mobidblite": "MobiDB",
+    "seg": "Seg",
+    "coils": "Coils",
+    "ncoils": "Coils",
+    "signalp": "SignalP",
+    "tmhmm": "TMHMM",
+    "phobius": "Phobius",
+    "alphafold": "AlphaFold",
+    "sifts": "SIFTS",
+    "cathgene3d": "Gene3D",
+    "ssf": "SuperFamily",
+    "profile": "PROSITE",
+}
+
+
+def normalize_source_name(source: str) -> str:
+    """Normalize database/source names to consistent capitalization."""
+    if not source:
+        return "Unknown"
+    # Check the map (case-insensitive)
+    normalized = SOURCE_NAME_MAP.get(source.lower())
+    if normalized:
+        return normalized
+    # If not in map, capitalize first letter
+    return source.capitalize() if source.islower() else source
 
 
 class FusionBuilder:
@@ -57,6 +107,9 @@ class FusionBuilder:
         # Determine in-frame status
         is_in_frame = None
         if transcript_a and transcript_b:
+            logger.info(f"Calculating in-frame status for {fusion_data.gene_a_symbol}-{fusion_data.gene_b_symbol}")
+            logger.info(f"  Transcript A: {transcript_a.id}, breakpoint: {fusion_data.gene_a_breakpoint}, strand: {fusion_data.gene_a_strand}")
+            logger.info(f"  Transcript B: {transcript_b.id}, breakpoint: {fusion_data.gene_b_breakpoint}, strand: {fusion_data.gene_b_strand}")
             is_in_frame = await self.mapper.is_in_frame_fusion(
                 fusion_data.gene_a_breakpoint,
                 fusion_data.gene_a_strand,
@@ -65,6 +118,9 @@ class FusionBuilder:
                 fusion_data.gene_b_strand,
                 transcript_b.id
             )
+            logger.info(f"  Result: is_in_frame={is_in_frame}")
+        else:
+            logger.warning(f"Cannot calculate in-frame: transcript_a={transcript_a}, transcript_b={transcript_b}")
 
         # Get protein domains
         domains_a = await self._get_domains_with_status(
@@ -116,7 +172,8 @@ class FusionBuilder:
             domains_b=[d.model_dump() for d in domains_b],
             has_kinase_domain=1 if has_kinase else 0,
             kinase_retained=1 if kinase_retained else (0 if kinase_retained is False else -1),
-            confidence=confidence
+            confidence=confidence,
+            genome_build=fusion_data.genome_build
         )
 
         self.db.add(fusion)
@@ -159,13 +216,18 @@ class FusionBuilder:
         self.db.add(gene)
         await self.db.commit()
 
-        # Cache transcripts
+        # Cache transcripts (pass gene symbol for InterPro domain lookup)
         for trans_data in gene_data.get("Transcript", []):
-            await self._cache_transcript(gene.id, trans_data)
+            await self._cache_transcript(gene.id, trans_data, gene.symbol)
 
         return gene
 
-    async def _cache_transcript(self, gene_id: str, trans_data: Dict) -> Transcript:
+    async def _cache_transcript(
+        self,
+        gene_id: str,
+        trans_data: Dict,
+        gene_symbol: Optional[str] = None
+    ) -> Transcript:
         """Cache a transcript and its related data."""
         result = await self.db.execute(
             select(Transcript).where(Transcript.id == trans_data["id"])
@@ -188,16 +250,80 @@ class FusionBuilder:
             transcript.cds_start = trans.get("start")
             transcript.cds_end = trans.get("end")
 
-            # Cache protein
-            await self._cache_protein(transcript.id, trans)
+            # Cache protein with InterPro domains
+            await self._cache_protein(transcript.id, trans, gene_symbol)
 
         self.db.add(transcript)
         await self.db.commit()
 
+        # Cache exons - first try from trans_data, then fetch explicitly if needed
+        exon_list = trans_data.get("Exon", [])
+
+        # If no exons in the lookup response, fetch them explicitly
+        if not exon_list:
+            exon_list = await self.ensembl.get_exons(transcript.id)
+
+        # If we have exons from lookup but they might be incomplete,
+        # also fetch explicitly to get full data
+        if len(exon_list) < 3:  # Likely incomplete if only 1-2 exons
+            fetched_exons = await self.ensembl.get_exons(transcript.id)
+            if len(fetched_exons) > len(exon_list):
+                exon_list = fetched_exons
+
+        # Filter to only exons belonging to this transcript (overlap endpoint returns all overlapping features)
+        exon_list = [e for e in exon_list if e.get("Parent") == transcript.id or "Parent" not in e]
+
+        # Sort exons by position and assign ranks if not present
+        # For positive strand: sort by start ascending
+        # For negative strand: sort by start descending (first exon has highest coords)
+        strand = trans_data.get("strand", 1)
+        if strand == -1 or strand == "-":
+            sorted_exons = sorted(exon_list, key=lambda e: e.get("start", 0), reverse=True)
+        else:
+            sorted_exons = sorted(exon_list, key=lambda e: e.get("start", 0))
+
+        for idx, exon_data in enumerate(sorted_exons):
+            # Assign rank if not present (1-based)
+            rank = exon_data.get("rank") or (idx + 1)
+            await self._cache_exon(transcript.id, exon_data, rank=rank)
+
         return transcript
 
-    async def _cache_protein(self, transcript_id: str, trans_data: Dict) -> Optional[Protein]:
-        """Cache protein and its domains."""
+    async def _cache_exon(self, transcript_id: str, exon_data: Dict, rank: int = 0) -> Exon:
+        """Cache an exon."""
+        exon_id = exon_data.get("id")
+        if not exon_id:
+            return None
+
+        result = await self.db.execute(
+            select(Exon).where(Exon.id == exon_id)
+        )
+        exon = result.scalar_one_or_none()
+
+        if not exon:
+            exon = Exon(id=exon_id)
+
+        exon.transcript_id = transcript_id
+        # Use provided rank, or from data, or default to 0
+        exon.rank = exon_data.get("rank") or rank or 0
+        exon.start = exon_data.get("start")
+        exon.end = exon_data.get("end")
+        exon.phase = exon_data.get("phase")
+        exon.end_phase = exon_data.get("end_phase")
+        exon.cached_at = datetime.utcnow()
+
+        self.db.add(exon)
+        await self.db.commit()
+
+        return exon
+
+    async def _cache_protein(
+        self,
+        transcript_id: str,
+        trans_data: Dict,
+        gene_symbol: Optional[str] = None
+    ) -> Optional[Protein]:
+        """Cache protein and its domains from multiple sources."""
         protein_id = trans_data.get("id")
         if not protein_id:
             return None
@@ -223,23 +349,73 @@ class FusionBuilder:
         self.db.add(protein)
         await self.db.commit()
 
-        # Fetch and cache domains
+        # Fetch domains from Ensembl
         features = await self.ensembl.get_protein_features(protein_id)
         for feat in features:
             await self._cache_domain(protein_id, feat)
 
+        # Also fetch comprehensive domains from InterPro/UniProt
+        if gene_symbol:
+            try:
+                interpro_client = get_interpro_client()
+                interpro_domains = await interpro_client.get_comprehensive_domains(
+                    gene_symbol,
+                    protein_length=protein.length
+                )
+                for domain in interpro_domains:
+                    await self._cache_domain(protein_id, {
+                        "description": domain.get("name"),
+                        "type": domain.get("source", "InterPro"),
+                        "id": domain.get("accession"),
+                        "start": domain.get("start"),
+                        "end": domain.get("end"),
+                    })
+                logger.info(f"Cached {len(interpro_domains)} InterPro domains for {gene_symbol}")
+            except Exception as e:
+                logger.warning(f"Failed to fetch InterPro domains for {gene_symbol}: {e}")
+
         return protein
 
-    async def _cache_domain(self, protein_id: str, feat_data: Dict) -> Domain:
-        """Cache a protein domain."""
+    async def _cache_domain(self, protein_id: str, feat_data: Dict) -> Optional[Domain]:
+        """Cache a protein domain with deduplication."""
+        name = feat_data.get("description", feat_data.get("type", "Unknown"))
+        start = feat_data.get("start")
+        end = feat_data.get("end")
+        raw_source = feat_data.get("type", "Unknown")
+        source = normalize_source_name(raw_source)
+
+        # Skip if missing required fields
+        if not start or not end:
+            return None
+
+        # Check for duplicate (same position and similar name)
+        result = await self.db.execute(
+            select(Domain).where(
+                Domain.protein_id == protein_id,
+                Domain.start == start,
+                Domain.end == end
+            )
+        )
+        existing = result.scalars().all()
+
+        # Check if we already have a domain at this position
+        for d in existing:
+            # Skip if we have an exact name match
+            if d.name and name and d.name.lower() == name.lower():
+                return d
+            # Skip if same source (normalize both for comparison)
+            if normalize_source_name(d.source or "") == source:
+                return d
+
         domain = Domain(
             protein_id=protein_id,
-            name=feat_data.get("description", feat_data.get("type", "Unknown")),
+            name=name,
             description=feat_data.get("description"),
-            source=feat_data.get("type", "Unknown"),
+            source=source,  # Use normalized source name
             accession=feat_data.get("id"),
-            start=feat_data.get("start"),
-            end=feat_data.get("end"),
+            start=start,
+            end=end,
+            score=feat_data.get("score"),  # E-value or hit score
             cached_at=datetime.utcnow()
         )
 
@@ -313,10 +489,11 @@ class FusionBuilder:
             domain_infos.append(DomainInfo(
                 name=domain.name or "Unknown",
                 description=domain.description,
-                source=domain.source or "Unknown",
+                source=normalize_source_name(domain.source or "Unknown"),
                 accession=domain.accession,
                 start=domain.start or 0,
                 end=domain.end or 0,
+                score=domain.score,
                 status=status,
                 is_kinase=is_kinase
             ))

@@ -63,6 +63,9 @@ class Fusion(Base):
     kinase_retained = Column(Integer, default=-1)  # 1 = yes, 0 = no, -1 = N/A
     confidence = Column(String(20))  # high, medium, low
 
+    # Genome build
+    genome_build = Column(String(10), default="hg38")  # hg38 or hg19
+
     # Raw data
     raw_data = Column(JSON)
 

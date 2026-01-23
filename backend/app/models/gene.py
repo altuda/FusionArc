@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, Text, ForeignKey, DateTime
+from sqlalchemy import Column, String, Integer, Text, ForeignKey, DateTime, Float
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.database import Base
@@ -77,6 +77,7 @@ class Domain(Base):
     accession = Column(String(50))
     start = Column(Integer)
     end = Column(Integer)
+    score = Column(Float)  # E-value or hit score from domain prediction
     cached_at = Column(DateTime, default=datetime.utcnow)
 
     protein = relationship("Protein", back_populates="domains")

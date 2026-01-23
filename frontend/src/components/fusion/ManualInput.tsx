@@ -1,56 +1,210 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import Button from '../common/Button'
-import { FusionManualInput } from '../../api/client'
+import { FusionManualInput, GenomeBuild, createBatchFusions } from '../../api/client'
 
 interface ManualInputProps {
   onSubmit: (data: FusionManualInput) => void
   isLoading?: boolean
 }
 
+type InputMode = 'form' | 'oneliner' | 'batch'
+
+// Unified format uses commas: chr22,23524427,+
+// One-liner format: BCR,chr22,23524427,+::ABL1,chr9,133729449,+
+// Batch format: multiple one-liners, one per line
+
 export default function ManualInput({ onSubmit, isLoading }: ManualInputProps) {
-  const [formData, setFormData] = useState<FusionManualInput>({
+  const navigate = useNavigate()
+  const [inputMode, setInputMode] = useState<InputMode>('form')
+  const [oneliner, setOneliner] = useState('')
+  const [batchInput, setBatchInput] = useState('')
+  const [genomeBuild, setGenomeBuild] = useState<GenomeBuild>('hg38')
+  const [batchLoading, setBatchLoading] = useState(false)
+  const [batchError, setBatchError] = useState<string | null>(null)
+
+  const [formData, setFormData] = useState({
     gene_a_symbol: '',
-    gene_a_breakpoint: '',
+    gene_a_chr: '',
+    gene_a_pos: '',
+    gene_a_strand: '+',
     gene_b_symbol: '',
-    gene_b_breakpoint: '',
-    junction_reads: undefined,
-    spanning_reads: undefined,
+    gene_b_chr: '',
+    gene_b_pos: '',
+    gene_b_strand: '+',
   })
 
   const [errors, setErrors] = useState<Record<string, string>>({})
 
-  const validateBreakpoint = (value: string): boolean => {
-    const pattern = /^chr[\dXY]+:\d+:[+-]$/
-    return pattern.test(value)
+  // Convert form data to one-liner
+  const formToOneliner = () => {
+    const { gene_a_symbol, gene_a_chr, gene_a_pos, gene_a_strand,
+            gene_b_symbol, gene_b_chr, gene_b_pos, gene_b_strand } = formData
+
+    if (gene_a_symbol && gene_a_chr && gene_a_pos && gene_b_symbol && gene_b_chr && gene_b_pos) {
+      return `${gene_a_symbol},${gene_a_chr},${gene_a_pos},${gene_a_strand}::${gene_b_symbol},${gene_b_chr},${gene_b_pos},${gene_b_strand}`
+    }
+    return ''
   }
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault()
+  // Parse one-liner to form data
+  const parseOneliner = (value: string) => {
+    // Format: BCR,chr22,23524427,+::ABL1,chr9,133729449,+
+    const parts = value.split('::')
+    if (parts.length !== 2) return null
+
+    const parseGene = (part: string) => {
+      const fields = part.split(',')
+      if (fields.length !== 4) return null
+      return {
+        symbol: fields[0].trim().toUpperCase(),
+        chr: fields[1].trim(),
+        pos: fields[2].trim(),
+        strand: fields[3].trim() as '+' | '-'
+      }
+    }
+
+    const geneA = parseGene(parts[0])
+    const geneB = parseGene(parts[1])
+
+    if (!geneA || !geneB) return null
+
+    return {
+      gene_a_symbol: geneA.symbol,
+      gene_a_chr: geneA.chr,
+      gene_a_pos: geneA.pos,
+      gene_a_strand: geneA.strand,
+      gene_b_symbol: geneB.symbol,
+      gene_b_chr: geneB.chr,
+      gene_b_pos: geneB.pos,
+      gene_b_strand: geneB.strand,
+    }
+  }
+
+  // Parse batch input to count valid fusions
+  const parseBatchInput = (value: string) => {
+    const lines = value.trim().split('\n').filter(line => line.trim())
+    const validFusions: string[] = []
+
+    for (const line of lines) {
+      if (parseOneliner(line.trim())) {
+        validFusions.push(line.trim())
+      }
+    }
+
+    return validFusions
+  }
+
+  // Sync form to one-liner when form changes
+  useEffect(() => {
+    if (inputMode === 'form') {
+      setOneliner(formToOneliner())
+    }
+  }, [formData, inputMode])
+
+  // Handle one-liner change
+  const handleOnelinerChange = (value: string) => {
+    setOneliner(value)
+    const parsed = parseOneliner(value)
+    if (parsed) {
+      setFormData(parsed)
+      setErrors({})
+    }
+  }
+
+  const validateForm = () => {
     const newErrors: Record<string, string> = {}
 
     if (!formData.gene_a_symbol.trim()) {
-      newErrors.gene_a_symbol = 'Gene A symbol is required'
+      newErrors.gene_a_symbol = 'Required'
+    }
+    if (!formData.gene_a_chr.trim() || !formData.gene_a_chr.startsWith('chr')) {
+      newErrors.gene_a_chr = 'Use format: chr22'
+    }
+    if (!formData.gene_a_pos.trim() || !/^\d+$/.test(formData.gene_a_pos)) {
+      newErrors.gene_a_pos = 'Must be a number'
     }
     if (!formData.gene_b_symbol.trim()) {
-      newErrors.gene_b_symbol = 'Gene B symbol is required'
+      newErrors.gene_b_symbol = 'Required'
     }
-    if (!validateBreakpoint(formData.gene_a_breakpoint)) {
-      newErrors.gene_a_breakpoint = 'Invalid format. Use chr:pos:strand (e.g., chr22:23632600:+)'
+    if (!formData.gene_b_chr.trim() || !formData.gene_b_chr.startsWith('chr')) {
+      newErrors.gene_b_chr = 'Use format: chr9'
     }
-    if (!validateBreakpoint(formData.gene_b_breakpoint)) {
-      newErrors.gene_b_breakpoint = 'Invalid format. Use chr:pos:strand (e.g., chr9:130854064:-)'
+    if (!formData.gene_b_pos.trim() || !/^\d+$/.test(formData.gene_b_pos)) {
+      newErrors.gene_b_pos = 'Must be a number'
     }
+
+    return newErrors
+  }
+
+  const validateOneliner = (): Record<string, string> => {
+    const parsed = parseOneliner(oneliner)
+    if (!parsed) {
+      return { oneliner: 'Invalid format. Use: GENE,chr,pos,strand::GENE,chr,pos,strand' }
+    }
+    return {}
+  }
+
+  const validateBatch = (): Record<string, string> => {
+    const validFusions = parseBatchInput(batchInput)
+    if (validFusions.length === 0) {
+      return { batch: 'No valid fusions found. Use one fusion per line.' }
+    }
+    return {}
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+
+    if (inputMode === 'batch') {
+      const newErrors = validateBatch()
+      if (Object.keys(newErrors).length > 0) {
+        setErrors(newErrors)
+        return
+      }
+
+      // Handle batch submission
+      setBatchLoading(true)
+      setBatchError(null)
+      try {
+        // Convert batch to the format backend expects
+        const validFusions = parseBatchInput(batchInput)
+        const batchContent = validFusions.map(line => {
+          const parsed = parseOneliner(line)!
+          return `${parsed.gene_a_symbol}::${parsed.gene_b_symbol}\t${parsed.gene_a_chr}:${parsed.gene_a_pos}:${parsed.gene_a_strand}\t${parsed.gene_b_chr}:${parsed.gene_b_pos}:${parsed.gene_b_strand}\t${genomeBuild}`
+        }).join('\n')
+
+        const session = await createBatchFusions(batchContent)
+        navigate(`/session/${session.id}`)
+      } catch (error) {
+        setBatchError(error instanceof Error ? error.message : 'Failed to create fusions')
+      } finally {
+        setBatchLoading(false)
+      }
+      return
+    }
+
+    const newErrors = inputMode === 'form' ? validateForm() : validateOneliner()
 
     if (Object.keys(newErrors).length > 0) {
       setErrors(newErrors)
       return
     }
 
+    // Build the submission data with unified format (using colons for backend compatibility)
+    const data: FusionManualInput = {
+      gene_a_symbol: formData.gene_a_symbol,
+      gene_a_breakpoint: `${formData.gene_a_chr}:${formData.gene_a_pos}:${formData.gene_a_strand}`,
+      gene_b_symbol: formData.gene_b_symbol,
+      gene_b_breakpoint: `${formData.gene_b_chr}:${formData.gene_b_pos}:${formData.gene_b_strand}`,
+      genome_build: genomeBuild,
+    }
+
     setErrors({})
-    onSubmit(formData)
+    onSubmit(data)
   }
 
-  const handleChange = (field: keyof FusionManualInput, value: string | number | undefined) => {
+  const handleFormChange = (field: string, value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }))
     if (errors[field]) {
       setErrors(prev => {
@@ -60,132 +214,334 @@ export default function ManualInput({ onSubmit, isLoading }: ManualInputProps) {
     }
   }
 
+  const loadExample = () => {
+    if (inputMode === 'batch') {
+      setBatchInput(`BCR,chr22,23524427,+::ABL1,chr9,133729449,+
+EML4,chr2,42522654,+::ALK,chr2,29446394,-
+TMPRSS2,chr21,41498118,-::ERG,chr21,38380027,-`)
+      setErrors({})
+    } else {
+      const exampleData = {
+        gene_a_symbol: 'BCR',
+        gene_a_chr: 'chr22',
+        gene_a_pos: '23524427',
+        gene_a_strand: '+',
+        gene_b_symbol: 'ABL1',
+        gene_b_chr: 'chr9',
+        gene_b_pos: '133729449',
+        gene_b_strand: '+',
+      }
+      setFormData(exampleData)
+      setOneliner('BCR,chr22,23524427,+::ABL1,chr9,133729449,+')
+      setErrors({})
+    }
+  }
+
+  const validBatchCount = parseBatchInput(batchInput).length
+
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Gene A Section */}
-        <div className="space-y-4">
-          <h4 className="font-medium text-gray-900 dark:text-white flex items-center">
-            <span className="w-3 h-3 rounded-full bg-blue-500 mr-2"></span>
-            Gene A (5' partner)
-          </h4>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              Gene Symbol
-            </label>
-            <input
-              type="text"
-              value={formData.gene_a_symbol}
-              onChange={(e) => handleChange('gene_a_symbol', e.target.value.toUpperCase())}
-              placeholder="e.g., BCR"
-              className={`w-full px-3 py-2 border rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white
-                ${errors.gene_a_symbol ? 'border-red-500' : 'border-gray-300 dark:border-gray-600'}
-                focus:outline-none focus:ring-2 focus:ring-primary-500`}
-            />
-            {errors.gene_a_symbol && (
-              <p className="mt-1 text-sm text-red-500">{errors.gene_a_symbol}</p>
-            )}
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              Breakpoint
-            </label>
-            <input
-              type="text"
-              value={formData.gene_a_breakpoint}
-              onChange={(e) => handleChange('gene_a_breakpoint', e.target.value)}
-              placeholder="chr22:23632600:+"
-              className={`w-full px-3 py-2 border rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white
-                ${errors.gene_a_breakpoint ? 'border-red-500' : 'border-gray-300 dark:border-gray-600'}
-                focus:outline-none focus:ring-2 focus:ring-primary-500`}
-            />
-            {errors.gene_a_breakpoint && (
-              <p className="mt-1 text-sm text-red-500">{errors.gene_a_breakpoint}</p>
-            )}
-          </div>
+      {/* Mode Toggle & Example */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center bg-gray-100 dark:bg-gray-700 rounded-lg p-1">
+          <button
+            type="button"
+            onClick={() => setInputMode('form')}
+            className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+              inputMode === 'form'
+                ? 'bg-white dark:bg-gray-600 text-gray-900 dark:text-white shadow-sm'
+                : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+            }`}
+          >
+            Form
+          </button>
+          <button
+            type="button"
+            onClick={() => setInputMode('oneliner')}
+            className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+              inputMode === 'oneliner'
+                ? 'bg-white dark:bg-gray-600 text-gray-900 dark:text-white shadow-sm'
+                : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+            }`}
+          >
+            One-liner
+          </button>
+          <button
+            type="button"
+            onClick={() => setInputMode('batch')}
+            className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+              inputMode === 'batch'
+                ? 'bg-white dark:bg-gray-600 text-gray-900 dark:text-white shadow-sm'
+                : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+            }`}
+          >
+            Batch
+          </button>
         </div>
-
-        {/* Gene B Section */}
-        <div className="space-y-4">
-          <h4 className="font-medium text-gray-900 dark:text-white flex items-center">
-            <span className="w-3 h-3 rounded-full bg-green-500 mr-2"></span>
-            Gene B (3' partner)
-          </h4>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              Gene Symbol
-            </label>
-            <input
-              type="text"
-              value={formData.gene_b_symbol}
-              onChange={(e) => handleChange('gene_b_symbol', e.target.value.toUpperCase())}
-              placeholder="e.g., ABL1"
-              className={`w-full px-3 py-2 border rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white
-                ${errors.gene_b_symbol ? 'border-red-500' : 'border-gray-300 dark:border-gray-600'}
-                focus:outline-none focus:ring-2 focus:ring-primary-500`}
-            />
-            {errors.gene_b_symbol && (
-              <p className="mt-1 text-sm text-red-500">{errors.gene_b_symbol}</p>
-            )}
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              Breakpoint
-            </label>
-            <input
-              type="text"
-              value={formData.gene_b_breakpoint}
-              onChange={(e) => handleChange('gene_b_breakpoint', e.target.value)}
-              placeholder="chr9:130854064:-"
-              className={`w-full px-3 py-2 border rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white
-                ${errors.gene_b_breakpoint ? 'border-red-500' : 'border-gray-300 dark:border-gray-600'}
-                focus:outline-none focus:ring-2 focus:ring-primary-500`}
-            />
-            {errors.gene_b_breakpoint && (
-              <p className="mt-1 text-sm text-red-500">{errors.gene_b_breakpoint}</p>
-            )}
-          </div>
-        </div>
+        <button
+          type="button"
+          onClick={loadExample}
+          className="text-sm text-primary-600 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300"
+        >
+          {inputMode === 'batch' ? 'Load examples (3 fusions)' : 'Load example (BCR-ABL1)'}
+        </button>
       </div>
 
-      {/* Optional Fields */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-            Junction Reads (optional)
+      {/* Batch Input Mode */}
+      {inputMode === 'batch' && (
+        <div className="space-y-2">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+            Multiple Fusions (one per line)
           </label>
-          <input
-            type="number"
-            value={formData.junction_reads || ''}
-            onChange={(e) => handleChange('junction_reads', e.target.value ? parseInt(e.target.value) : undefined)}
-            placeholder="e.g., 50"
-            min="0"
-            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500"
+          <textarea
+            value={batchInput}
+            onChange={(e) => {
+              setBatchInput(e.target.value)
+              setErrors({})
+              setBatchError(null)
+            }}
+            placeholder={`BCR,chr22,23524427,+::ABL1,chr9,133729449,+
+EML4,chr2,42522654,+::ALK,chr2,29446394,-
+TMPRSS2,chr21,41498118,-::ERG,chr21,38380027,-`}
+            rows={6}
+            className={`w-full px-3 py-2 border rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white font-mono text-sm
+              ${errors.batch ? 'border-red-500' : 'border-gray-300 dark:border-gray-600'}
+              focus:outline-none focus:ring-2 focus:ring-primary-500`}
           />
+          {errors.batch && (
+            <p className="text-sm text-red-500">{errors.batch}</p>
+          )}
+          {batchError && (
+            <p className="text-sm text-red-500">{batchError}</p>
+          )}
+          <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
+            <span>Format: <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">GENE,chr,pos,strand::GENE,chr,pos,strand</code></span>
+            {validBatchCount > 0 && (
+              <span className="text-green-600 dark:text-green-400">
+                {validBatchCount} valid fusion{validBatchCount !== 1 ? 's' : ''} detected
+              </span>
+            )}
+          </div>
         </div>
+      )}
 
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-            Spanning Reads (optional)
+      {/* One-liner Input Mode */}
+      {inputMode === 'oneliner' && (
+        <div className="space-y-2">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+            Fusion (one-liner format)
           </label>
           <input
-            type="number"
-            value={formData.spanning_reads || ''}
-            onChange={(e) => handleChange('spanning_reads', e.target.value ? parseInt(e.target.value) : undefined)}
-            placeholder="e.g., 30"
-            min="0"
-            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500"
+            type="text"
+            value={oneliner}
+            onChange={(e) => handleOnelinerChange(e.target.value)}
+            placeholder="BCR,chr22,23524427,+::ABL1,chr9,133729449,+"
+            className={`w-full px-3 py-2 border rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white font-mono text-sm
+              ${errors.oneliner ? 'border-red-500' : 'border-gray-300 dark:border-gray-600'}
+              focus:outline-none focus:ring-2 focus:ring-primary-500`}
           />
+          {errors.oneliner && (
+            <p className="text-sm text-red-500">{errors.oneliner}</p>
+          )}
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            Format: <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">GENE,chr,position,strand::GENE,chr,position,strand</code>
+          </p>
+        </div>
+      )}
+
+      {/* Form Input Mode */}
+      {inputMode === 'form' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {/* Gene A Section */}
+          <div className="space-y-4">
+            <h4 className="font-medium text-gray-900 dark:text-white flex items-center">
+              <span className="w-3 h-3 rounded-full bg-blue-500 mr-2"></span>
+              Gene A (5' partner)
+            </h4>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Gene Symbol
+              </label>
+              <input
+                type="text"
+                value={formData.gene_a_symbol}
+                onChange={(e) => handleFormChange('gene_a_symbol', e.target.value.toUpperCase())}
+                placeholder="BCR"
+                className={`w-full px-3 py-2 border rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white
+                  ${errors.gene_a_symbol ? 'border-red-500' : 'border-gray-300 dark:border-gray-600'}
+                  focus:outline-none focus:ring-2 focus:ring-primary-500`}
+              />
+              {errors.gene_a_symbol && (
+                <p className="mt-1 text-sm text-red-500">{errors.gene_a_symbol}</p>
+              )}
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
+              <div className="col-span-1">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Chromosome
+                </label>
+                <input
+                  type="text"
+                  value={formData.gene_a_chr}
+                  onChange={(e) => handleFormChange('gene_a_chr', e.target.value.toLowerCase())}
+                  placeholder="chr22"
+                  className={`w-full px-3 py-2 border rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white
+                    ${errors.gene_a_chr ? 'border-red-500' : 'border-gray-300 dark:border-gray-600'}
+                    focus:outline-none focus:ring-2 focus:ring-primary-500`}
+                />
+              </div>
+              <div className="col-span-1">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Position
+                </label>
+                <input
+                  type="text"
+                  value={formData.gene_a_pos}
+                  onChange={(e) => handleFormChange('gene_a_pos', e.target.value.replace(/\D/g, ''))}
+                  placeholder="23524427"
+                  className={`w-full px-3 py-2 border rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white
+                    ${errors.gene_a_pos ? 'border-red-500' : 'border-gray-300 dark:border-gray-600'}
+                    focus:outline-none focus:ring-2 focus:ring-primary-500`}
+                />
+              </div>
+              <div className="col-span-1">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Strand
+                </label>
+                <select
+                  value={formData.gene_a_strand}
+                  onChange={(e) => handleFormChange('gene_a_strand', e.target.value)}
+                  className="w-full px-3 py-2 border rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white border-gray-300 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                >
+                  <option value="+">+</option>
+                  <option value="-">-</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {/* Gene B Section */}
+          <div className="space-y-4">
+            <h4 className="font-medium text-gray-900 dark:text-white flex items-center">
+              <span className="w-3 h-3 rounded-full bg-green-500 mr-2"></span>
+              Gene B (3' partner)
+            </h4>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Gene Symbol
+              </label>
+              <input
+                type="text"
+                value={formData.gene_b_symbol}
+                onChange={(e) => handleFormChange('gene_b_symbol', e.target.value.toUpperCase())}
+                placeholder="ABL1"
+                className={`w-full px-3 py-2 border rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white
+                  ${errors.gene_b_symbol ? 'border-red-500' : 'border-gray-300 dark:border-gray-600'}
+                  focus:outline-none focus:ring-2 focus:ring-primary-500`}
+              />
+              {errors.gene_b_symbol && (
+                <p className="mt-1 text-sm text-red-500">{errors.gene_b_symbol}</p>
+              )}
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
+              <div className="col-span-1">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Chromosome
+                </label>
+                <input
+                  type="text"
+                  value={formData.gene_b_chr}
+                  onChange={(e) => handleFormChange('gene_b_chr', e.target.value.toLowerCase())}
+                  placeholder="chr9"
+                  className={`w-full px-3 py-2 border rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white
+                    ${errors.gene_b_chr ? 'border-red-500' : 'border-gray-300 dark:border-gray-600'}
+                    focus:outline-none focus:ring-2 focus:ring-primary-500`}
+                />
+              </div>
+              <div className="col-span-1">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Position
+                </label>
+                <input
+                  type="text"
+                  value={formData.gene_b_pos}
+                  onChange={(e) => handleFormChange('gene_b_pos', e.target.value.replace(/\D/g, ''))}
+                  placeholder="133729449"
+                  className={`w-full px-3 py-2 border rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white
+                    ${errors.gene_b_pos ? 'border-red-500' : 'border-gray-300 dark:border-gray-600'}
+                    focus:outline-none focus:ring-2 focus:ring-primary-500`}
+                />
+              </div>
+              <div className="col-span-1">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Strand
+                </label>
+                <select
+                  value={formData.gene_b_strand}
+                  onChange={(e) => handleFormChange('gene_b_strand', e.target.value)}
+                  className="w-full px-3 py-2 border rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white border-gray-300 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                >
+                  <option value="+">+</option>
+                  <option value="-">-</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* One-liner preview when in form mode */}
+      {inputMode === 'form' && formToOneliner() && (
+        <div className="bg-gray-50 dark:bg-gray-700/50 rounded-lg p-3">
+          <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">One-liner format:</p>
+          <code className="text-sm text-gray-700 dark:text-gray-300 font-mono break-all">
+            {formToOneliner()}
+          </code>
+        </div>
+      )}
+
+      {/* Genome Build */}
+      <div>
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+          Genome Build
+        </label>
+        <div className="flex items-center space-x-4">
+          <label className="flex items-center">
+            <input
+              type="radio"
+              name="genome_build"
+              value="hg38"
+              checked={genomeBuild === 'hg38'}
+              onChange={(e) => setGenomeBuild(e.target.value as GenomeBuild)}
+              className="mr-2 text-primary-600 focus:ring-primary-500"
+            />
+            <span className="text-sm text-gray-700 dark:text-gray-300">
+              hg38 <span className="text-gray-500">(GRCh38)</span>
+            </span>
+          </label>
+          <label className="flex items-center">
+            <input
+              type="radio"
+              name="genome_build"
+              value="hg19"
+              checked={genomeBuild === 'hg19'}
+              onChange={(e) => setGenomeBuild(e.target.value as GenomeBuild)}
+              className="mr-2 text-primary-600 focus:ring-primary-500"
+            />
+            <span className="text-sm text-gray-700 dark:text-gray-300">
+              hg19 <span className="text-gray-500">(GRCh37)</span>
+            </span>
+          </label>
         </div>
       </div>
 
       <div className="flex justify-end">
-        <Button type="submit" disabled={isLoading}>
-          {isLoading ? (
+        <Button type="submit" disabled={isLoading || batchLoading}>
+          {(isLoading || batchLoading) ? (
             <>
               <svg className="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
@@ -193,6 +549,8 @@ export default function ManualInput({ onSubmit, isLoading }: ManualInputProps) {
               </svg>
               Analyzing...
             </>
+          ) : inputMode === 'batch' ? (
+            `Analyze ${validBatchCount} Fusion${validBatchCount !== 1 ? 's' : ''}`
           ) : (
             'Analyze Fusion'
           )}

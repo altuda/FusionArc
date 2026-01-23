@@ -1,15 +1,25 @@
 import { useState } from 'react'
 import Button from '../common/Button'
 import { exportSVG, exportPNG, exportFASTA } from '../../api/client'
+import { LegendItem, generateLegendSVG } from './DomainColorLegend'
 
 interface ExportButtonsProps {
   svgContent: string | null
   sequence: string | null
   fusionName: string
+  legendItems?: LegendItem[]  // Optional legend items for publication-ready export
+  includeLegend?: boolean     // Whether to include legend in export
 }
 
-export default function ExportButtons({ svgContent, sequence, fusionName }: ExportButtonsProps) {
+export default function ExportButtons({
+  svgContent,
+  sequence,
+  fusionName,
+  legendItems = [],
+  includeLegend = true
+}: ExportButtonsProps) {
   const [isExporting, setIsExporting] = useState<string | null>(null)
+  const [showLegendOption, setShowLegendOption] = useState(includeLegend)
 
   const downloadBlob = (blob: Blob, filename: string) => {
     const url = URL.createObjectURL(blob)
@@ -22,15 +32,82 @@ export default function ExportButtons({ svgContent, sequence, fusionName }: Expo
     URL.revokeObjectURL(url)
   }
 
+  /**
+   * Append legend to SVG content for publication-ready export
+   */
+  const appendLegendToSVG = (svg: string, items: LegendItem[]): string => {
+    if (items.length === 0) return svg
+
+    // Parse the SVG to get dimensions
+    const parser = new DOMParser()
+    const doc = parser.parseFromString(svg, 'image/svg+xml')
+    const svgElement = doc.querySelector('svg')
+
+    if (!svgElement) return svg
+
+    // Get current dimensions
+    const currentHeight = parseFloat(svgElement.getAttribute('height') || '200')
+
+    // Calculate legend dimensions
+    const columns = items.length > 8 ? 2 : 1
+    const itemsPerColumn = Math.ceil(items.length / columns)
+    const legendHeight = itemsPerColumn * 18 + 30  // 18px per item + title + padding
+
+    // Create new SVG with extra space for legend
+    const newHeight = currentHeight + legendHeight + 20
+    svgElement.setAttribute('height', String(newHeight))
+
+    // Update viewBox if present
+    const viewBox = svgElement.getAttribute('viewBox')
+    if (viewBox) {
+      const parts = viewBox.split(' ')
+      if (parts.length === 4) {
+        parts[3] = String(newHeight)
+        svgElement.setAttribute('viewBox', parts.join(' '))
+      }
+    }
+
+    // Generate legend SVG elements
+    const legendSVG = generateLegendSVG(items, {
+      x: 40,
+      y: currentHeight + 15,
+      columns,
+      columnWidth: 180,
+      title: 'Protein Domains'
+    })
+
+    // Create a group for the legend
+    const legendGroup = doc.createElementNS('http://www.w3.org/2000/svg', 'g')
+    legendGroup.setAttribute('class', 'domain-legend')
+    legendGroup.innerHTML = legendSVG
+
+    svgElement.appendChild(legendGroup)
+
+    // Serialize back to string
+    const serializer = new XMLSerializer()
+    return serializer.serializeToString(doc)
+  }
+
   const handleExportSVG = async () => {
     if (!svgContent) return
     setIsExporting('svg')
     try {
-      const blob = await exportSVG(svgContent, fusionName)
+      let finalSvg = svgContent
+
+      // Add legend if enabled and items available
+      if (showLegendOption && legendItems.length > 0) {
+        finalSvg = appendLegendToSVG(svgContent, legendItems)
+      }
+
+      const blob = await exportSVG(finalSvg, fusionName)
       downloadBlob(blob, `${fusionName}.svg`)
     } catch (error) {
       // Fall back to client-side export
-      const blob = new Blob([svgContent], { type: 'image/svg+xml' })
+      let finalSvg = svgContent
+      if (showLegendOption && legendItems.length > 0) {
+        finalSvg = appendLegendToSVG(svgContent, legendItems)
+      }
+      const blob = new Blob([finalSvg], { type: 'image/svg+xml' })
       downloadBlob(blob, `${fusionName}.svg`)
     } finally {
       setIsExporting(null)
@@ -41,7 +118,19 @@ export default function ExportButtons({ svgContent, sequence, fusionName }: Expo
     if (!svgContent) return
     setIsExporting('png')
     try {
-      const blob = await exportPNG(svgContent, 1200, 400, fusionName)
+      let finalSvg = svgContent
+
+      // Add legend if enabled
+      if (showLegendOption && legendItems.length > 0) {
+        finalSvg = appendLegendToSVG(svgContent, legendItems)
+      }
+
+      // Calculate appropriate dimensions
+      const heightBonus = showLegendOption && legendItems.length > 0
+        ? Math.ceil(legendItems.length / 2) * 18 + 50
+        : 0
+
+      const blob = await exportPNG(finalSvg, 1200, 400 + heightBonus, fusionName)
       downloadBlob(blob, `${fusionName}.png`)
     } catch (error) {
       console.error('PNG export failed:', error)
@@ -72,7 +161,20 @@ export default function ExportButtons({ svgContent, sequence, fusionName }: Expo
   }
 
   return (
-    <div className="flex flex-wrap gap-2">
+    <div className="flex flex-wrap items-center gap-2">
+      {/* Legend toggle (only show if legend items available) */}
+      {legendItems.length > 0 && (
+        <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-400 mr-2">
+          <input
+            type="checkbox"
+            checked={showLegendOption}
+            onChange={(e) => setShowLegendOption(e.target.checked)}
+            className="rounded border-gray-300 text-primary-600 focus:ring-primary-500 h-3.5 w-3.5"
+          />
+          Include legend
+        </label>
+      )}
+
       <Button
         variant="secondary"
         size="sm"

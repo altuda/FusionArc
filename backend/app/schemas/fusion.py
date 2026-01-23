@@ -3,6 +3,20 @@ from typing import Optional, List
 from datetime import datetime
 
 
+class ExonInfo(BaseModel):
+    """Exon information for transcript visualization."""
+    rank: int  # Exon number (1-based)
+    start: int  # Genomic start
+    end: int  # Genomic end
+    cds_start: Optional[int] = None  # CDS start within exon (if coding)
+    cds_end: Optional[int] = None  # CDS end within exon (if coding)
+    is_coding: bool = False  # Whether this exon contains coding sequence
+    status: str = "unknown"  # retained, partial, lost
+
+    class Config:
+        from_attributes = True
+
+
 class DomainInfo(BaseModel):
     name: str
     description: Optional[str] = None
@@ -10,11 +24,36 @@ class DomainInfo(BaseModel):
     accession: Optional[str] = None
     start: int
     end: int
+    score: Optional[float] = None  # E-value or hit score (lower is more significant)
     status: str  # retained, truncated, lost
     is_kinase: bool = False
 
     class Config:
         from_attributes = True
+
+
+class MutationInfo(BaseModel):
+    """Mutation data for lollipop plot visualization."""
+    position: int  # Amino acid position
+    ref_aa: str = ""  # Reference amino acid
+    alt_aa: str = ""  # Alternate amino acid
+    type: str  # missense, nonsense, frameshift, silent, splice, inframe_indel, other
+    label: str  # Display label (e.g., "V600E")
+    count: int = 1  # Frequency/count
+    source: str = "cBioPortal"  # Data source
+    gene: str = ""  # Which gene this mutation is in (A or B)
+
+    class Config:
+        from_attributes = True
+
+
+class MutationResponse(BaseModel):
+    """Response containing mutations for both genes in a fusion."""
+    gene_a_symbol: str
+    gene_b_symbol: str
+    mutations_a: List[MutationInfo] = []
+    mutations_b: List[MutationInfo] = []
+    total_count: int = 0
 
 
 class FusionManualInput(BaseModel):
@@ -26,6 +65,7 @@ class FusionManualInput(BaseModel):
     transcript_b_id: Optional[str] = None
     junction_reads: Optional[int] = None
     spanning_reads: Optional[int] = None
+    genome_build: str = Field(default="hg38", description="Genome build: hg38 (GRCh38) or hg19 (GRCh37)")
 
 
 class FusionCreate(BaseModel):
@@ -41,6 +81,7 @@ class FusionCreate(BaseModel):
     spanning_reads: Optional[int] = None
     transcript_a_id: Optional[str] = None
     transcript_b_id: Optional[str] = None
+    genome_build: str = "hg38"
 
 
 class FusionResponse(BaseModel):
@@ -71,12 +112,20 @@ class FusionListResponse(BaseModel):
 class GeneVisualizationData(BaseModel):
     symbol: str
     chromosome: Optional[str] = None
-    breakpoint: Optional[int] = None
+    breakpoint: Optional[int] = None  # Genomic breakpoint
     strand: Optional[str] = None
-    aa_breakpoint: Optional[int] = None
+    aa_breakpoint: Optional[int] = None  # Protein position
     protein_length: Optional[int] = None
     domains: List[DomainInfo] = []
+    exons: List[ExonInfo] = []  # Exon data for transcript view
+    transcript_id: Optional[str] = None
+    gene_start: Optional[int] = None  # Genomic start of gene
+    gene_end: Optional[int] = None  # Genomic end of gene
+    cds_start: Optional[int] = None  # CDS start position
+    cds_end: Optional[int] = None  # CDS end position
     color: str
+    breakpoint_exon: Optional[int] = None  # Exon number at breakpoint (for display)
+    breakpoint_location: Optional[str] = None  # "exon X" or "intron X" (for display)
 
 
 class FusionDetailResponse(BaseModel):
@@ -103,20 +152,43 @@ class FusionDetailResponse(BaseModel):
     has_kinase_domain: int = 0
     kinase_retained: int = -1
     confidence: Optional[str] = None
+    genome_build: str = "hg38"
     created_at: datetime
 
     class Config:
         from_attributes = True
 
 
+class FusionExonInfo(BaseModel):
+    """Exon in the fusion transcript."""
+    gene: str  # "A" or "B"
+    rank: int  # Original exon number
+    start: int  # Position in fusion transcript (bp)
+    end: int  # Position in fusion transcript (bp)
+    length: int  # Length in bp
+    is_coding: bool = False
+    original_genomic_start: int
+    original_genomic_end: int
+
+
+class FusionTranscriptData(BaseModel):
+    """Data for fusion transcript visualization."""
+    total_length: int  # Total transcript length in bp
+    cds_start: Optional[int] = None  # CDS start in fusion transcript
+    cds_end: Optional[int] = None  # CDS end in fusion transcript
+    junction_position: int  # Junction position in transcript (bp)
+    exons: List[FusionExonInfo] = []
+
+
 class VisualizationData(BaseModel):
     fusion_id: str
     fusion_name: str
-    total_length: int
+    total_length: int  # Total protein length (AA)
     gene_a: GeneVisualizationData
     gene_b: GeneVisualizationData
-    junction_position: int
+    junction_position: int  # Protein junction position (AA)
     is_in_frame: Optional[bool] = None
+    fusion_transcript: Optional[FusionTranscriptData] = None  # For transcript view
 
 
 class SessionCreate(BaseModel):

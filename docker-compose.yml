@@ -9,7 +9,10 @@ services:
     environment:
       - DATABASE_URL=sqlite+aiosqlite:///data/fusion_cache.db
       - ENSEMBL_API_URL=https://rest.ensembl.org
+      - CORS_ALLOW_ALL=true
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - fusion-network
 
   frontend:
     build: ./frontend
@@ -19,9 +22,15 @@ services:
       - ./frontend:/app
       - /app/node_modules
     environment:
-      - VITE_API_URL=http://localhost:8000/api/v1
+      - VITE_API_URL=/api/v1
     depends_on:
       - backend
+    networks:
+      - fusion-network
+
+networks:
+  fusion-network:
+    driver: bridge
 
 volumes:
   sqlite_data:

@@ -5,6 +5,7 @@ import {
   getVisualizationData,
   createManualFusion,
   uploadFusionFile,
+  getFusionMutations,
   FusionManualInput,
 } from '../api/client'
 
@@ -51,5 +52,14 @@ export function useUploadFusion() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['fusions'] })
     },
+  })
+}
+
+export function useFusionMutations(sessionId: string | undefined, fusionId: string | undefined) {
+  return useQuery({
+    queryKey: ['mutations', sessionId, fusionId],
+    queryFn: () => getFusionMutations(sessionId!, fusionId!),
+    enabled: !!sessionId && !!fusionId,
+    staleTime: 1000 * 60 * 10, // Cache for 10 minutes (mutations don't change often)
   })
 }

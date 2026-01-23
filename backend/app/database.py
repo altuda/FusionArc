@@ -30,5 +30,8 @@ async def get_db():
 
 
 async def init_db():
+    # Import models to register them with Base.metadata
+    from app.models import Gene, Transcript, Exon, Protein, Domain, Session, Fusion  # noqa: F401
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

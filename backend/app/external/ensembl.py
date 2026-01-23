@@ -5,12 +5,19 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from app.config import get_settings
 
 
+ENSEMBL_URLS = {
+    "hg38": "https://rest.ensembl.org",
+    "hg19": "https://grch37.rest.ensembl.org",
+}
+
+
 class EnsemblClient:
     """Async client for Ensembl REST API."""
 
-    def __init__(self):
+    def __init__(self, genome_build: str = "hg38"):
         self.settings = get_settings()
-        self.base_url = self.settings.ensembl_api_url
+        self.genome_build = genome_build
+        self.base_url = ENSEMBL_URLS.get(genome_build, ENSEMBL_URLS["hg38"])
         self._semaphore = asyncio.Semaphore(self.settings.ensembl_rate_limit)
 
     async def _request(self, endpoint: str, params: Optional[Dict] = None) -> Dict[str, Any]:
@@ -144,12 +151,13 @@ class EnsemblClient:
         return transcripts[0] if transcripts else None
 
 
-# Singleton instance
-_ensembl_client = None
+# Client instances per genome build
+_ensembl_clients: Dict[str, EnsemblClient] = {}
 
 
-def get_ensembl_client() -> EnsemblClient:
-    global _ensembl_client
-    if _ensembl_client is None:
-        _ensembl_client = EnsemblClient()
-    return _ensembl_client
+def get_ensembl_client(genome_build: str = "hg38") -> EnsemblClient:
+    """Get or create an EnsemblClient for the specified genome build."""
+    global _ensembl_clients
+    if genome_build not in _ensembl_clients:
+        _ensembl_clients[genome_build] = EnsemblClient(genome_build)
+    return _ensembl_clients[genome_build]
