@@ -6,6 +6,7 @@ import { FusionManualInput, GenomeBuild, createBatchFusions } from '../../api/cl
 interface ManualInputProps {
   onSubmit: (data: FusionManualInput) => void
   isLoading?: boolean
+  sessionId?: string  // If provided, add fusions to this session instead of creating new
 }
 
 type InputMode = 'form' | 'text'  // 'text' mode handles both single and batch input
@@ -14,7 +15,7 @@ type InputMode = 'form' | 'text'  // 'text' mode handles both single and batch i
 // One-liner format: BCR,chr22,23524427,+::ABL1,chr9,133729449,+
 // Batch format: multiple one-liners, one per line
 
-export default function ManualInput({ onSubmit, isLoading }: ManualInputProps) {
+export default function ManualInput({ onSubmit, isLoading, sessionId }: ManualInputProps) {
   const navigate = useNavigate()
   const [inputMode, setInputMode] = useState<InputMode>('form')
   const [textInput, setTextInput] = useState('')
@@ -157,7 +158,7 @@ export default function ManualInput({ onSubmit, isLoading }: ManualInputProps) {
           return `${parsed.gene_a_symbol}::${parsed.gene_b_symbol}\t${parsed.gene_a_chr}:${parsed.gene_a_pos}:${parsed.gene_a_strand}\t${parsed.gene_b_chr}:${parsed.gene_b_pos}:${parsed.gene_b_strand}\t${genomeBuild}`
         }).join('\n')
 
-        const session = await createBatchFusions(batchContent)
+        const session = await createBatchFusions(batchContent, sessionId)
         navigate(`/session/${session.id}`)
       } catch (error) {
         setTextError(error instanceof Error ? error.message : 'Failed to create fusions')

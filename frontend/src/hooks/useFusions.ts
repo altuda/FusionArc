@@ -33,11 +33,17 @@ export function useVisualizationData(sessionId: string | undefined, fusionId: st
   })
 }
 
+interface CreateManualFusionVariables {
+  input: FusionManualInput
+  sessionId?: string
+}
+
 export function useCreateManualFusion() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: (input: FusionManualInput) => createManualFusion(input),
+    mutationFn: ({ input, sessionId }: CreateManualFusionVariables) =>
+      createManualFusion(input, sessionId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['fusions'] })
     },

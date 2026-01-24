@@ -10,6 +10,7 @@ import { useFusions, useCreateManualFusion, useUploadFusion } from '../hooks/use
 import { FusionManualInput, createBatchFusions, createBatchFromFusions } from '../api/client'
 
 type InputMode = 'manual' | 'file'
+type SessionMode = 'new' | 'add'  // 'new' creates new session, 'add' adds to current
 
 export default function Dashboard() {
   const { sessionId } = useParams<{ sessionId: string }>()
@@ -21,6 +22,7 @@ export default function Dashboard() {
   const [isCreatingBatch, setIsCreatingBatch] = useState(false)
   const [selectedFusionIds, setSelectedFusionIds] = useState<Set<string>>(new Set())
   const [currentSessionId, setCurrentSessionId] = useState<string | undefined>(sessionId)
+  const [sessionMode, setSessionMode] = useState<SessionMode>('new')
 
   const { data: fusionsData, isLoading: isLoadingFusions } = useFusions(currentSessionId)
   const createManualMutation = useCreateManualFusion()
@@ -39,8 +41,13 @@ export default function Dashboard() {
 
   const handleManualSubmit = async (data: FusionManualInput) => {
     try {
-      const result = await createManualMutation.mutateAsync(data)
-      // Navigate to the fusion detail page
+      const targetSessionId = sessionMode === 'add' && currentSessionId ? currentSessionId : undefined
+      const result = await createManualMutation.mutateAsync({
+        input: data,
+        sessionId: targetSessionId
+      })
+      // Update current session and navigate
+      setCurrentSessionId(result.session_id)
       navigate(`/session/${result.session_id}/fusion/${result.id}`)
     } catch (error) {
       console.error('Failed to create fusion:', error)
@@ -59,7 +66,8 @@ export default function Dashboard() {
 
   const handleBatchSubmit = async (content: string) => {
     try {
-      const session = await createBatchFusions(content)
+      const targetSessionId = sessionMode === 'add' && currentSessionId ? currentSessionId : undefined
+      const session = await createBatchFusions(content, targetSessionId)
       setCurrentSessionId(session.id)
       setShowBatchModal(false)
       navigate(`/session/${session.id}`)
@@ -99,6 +107,55 @@ export default function Dashboard() {
         </p>
       </div>
 
+      {/* Session Control - only show when there's an active session */}
+      {currentSessionId && (
+        <div className="bg-gray-50 dark:bg-gray-800/50 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-6">
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                Session:
+              </span>
+              <label className="flex items-center cursor-pointer">
+                <input
+                  type="radio"
+                  name="sessionMode"
+                  value="new"
+                  checked={sessionMode === 'new'}
+                  onChange={() => setSessionMode('new')}
+                  className="mr-2 text-primary-600 focus:ring-primary-500"
+                />
+                <span className="text-sm text-gray-700 dark:text-gray-300">
+                  New session
+                </span>
+              </label>
+              <label className="flex items-center cursor-pointer">
+                <input
+                  type="radio"
+                  name="sessionMode"
+                  value="add"
+                  checked={sessionMode === 'add'}
+                  onChange={() => setSessionMode('add')}
+                  className="mr-2 text-primary-600 focus:ring-primary-500"
+                />
+                <span className="text-sm text-gray-700 dark:text-gray-300">
+                  Add to current
+                  {fusionsData && (
+                    <span className="ml-1 text-gray-500 dark:text-gray-400">
+                      ({fusionsData.total} fusion{fusionsData.total !== 1 ? 's' : ''})
+                    </span>
+                  )}
+                </span>
+              </label>
+            </div>
+            {sessionMode === 'add' && (
+              <span className="text-xs text-primary-600 dark:text-primary-400">
+                New fusions will be added to the current session
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Input Section */}
       <Card>
         <CardHeader>
@@ -135,6 +192,7 @@ export default function Dashboard() {
             <ManualInput
               onSubmit={handleManualSubmit}
               isLoading={createManualMutation.isPending}
+              sessionId={sessionMode === 'add' ? currentSessionId : undefined}
             />
           ) : (
             <FileDropzone

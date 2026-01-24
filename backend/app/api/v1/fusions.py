@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Body
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Body, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete, or_
 from typing import List, Optional, Set
@@ -114,7 +114,7 @@ async def upload_fusion_file(
 @router.post("/manual", response_model=FusionDetailResponse)
 async def create_manual_fusion(
     input_data: FusionManualInput,
-    session_id: Optional[str] = None,
+    session_id: Optional[str] = Query(None, description="Session ID to add fusion to"),
     db: AsyncSession = Depends(get_db)
 ):
     """Create a fusion from manual input.
@@ -155,20 +155,37 @@ async def create_manual_fusion(
 @router.post("/batch", response_model=SessionResponse)
 async def create_batch_fusions(
     content: str = Body(..., media_type="text/plain"),
+    session_id: Optional[str] = Query(None, description="Session ID to add fusions to"),
     db: AsyncSession = Depends(get_db)
 ):
-    """Create multiple fusions from batch text input."""
+    """Create multiple fusions from batch text input.
+
+    Args:
+        content: The batch input text with one fusion per line
+        session_id: Optional session ID to add fusions to. If provided, adds to existing session.
+                   If not provided, creates a new session.
+    """
     parser = ManualInputParser()
     fusion_data_list = parser.parse(content)
 
     if not fusion_data_list:
         raise HTTPException(400, "No valid fusions found in input.")
 
-    # Create session
-    session = Session(name="Batch Input", source="manual")
-    db.add(session)
-    await db.commit()
-    await db.refresh(session)
+    # Use provided session or create new one
+    session = None
+    if session_id:
+        result = await db.execute(
+            select(Session).where(Session.id == session_id)
+        )
+        session = result.scalars().first()
+        if not session:
+            raise HTTPException(404, f"Session {session_id} not found")
+
+    if not session:
+        session = Session(name="Batch Input", source="manual")
+        db.add(session)
+        await db.commit()
+        await db.refresh(session)
 
     # Build fusions - use per-fusion genome build
     # Cache ensembl clients by genome build to avoid recreating

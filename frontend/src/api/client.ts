@@ -175,14 +175,23 @@ export async function uploadFusionFile(file: File): Promise<SessionResponse> {
   return response.data
 }
 
-export async function createManualFusion(input: FusionManualInput): Promise<FusionDetailResponse> {
-  const response = await apiClient.post<FusionDetailResponse>('/fusions/manual', input)
+export async function createManualFusion(
+  input: FusionManualInput,
+  sessionId?: string
+): Promise<FusionDetailResponse> {
+  const params = sessionId ? { session_id: sessionId } : {}
+  const response = await apiClient.post<FusionDetailResponse>('/fusions/manual', input, { params })
   return response.data
 }
 
-export async function createBatchFusions(content: string): Promise<SessionResponse> {
+export async function createBatchFusions(
+  content: string,
+  sessionId?: string
+): Promise<SessionResponse> {
+  const params = sessionId ? { session_id: sessionId } : {}
   const response = await apiClient.post<SessionResponse>('/fusions/batch', content, {
     headers: { 'Content-Type': 'text/plain' },
+    params,
   })
   return response.data
 }
