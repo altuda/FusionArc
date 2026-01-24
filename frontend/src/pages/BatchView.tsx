@@ -2,6 +2,10 @@ import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import Card, { CardHeader, CardBody } from '../components/common/Card'
 import Button from '../components/common/Button'
+import LoadingSpinner from '../components/common/LoadingSpinner'
+import StatusBadge, { getFrameStatus, getKinaseStatus } from '../components/common/StatusBadge'
+import ViewModeSelector from '../components/common/ViewModeSelector'
+import DatabaseFilter from '../components/common/DatabaseFilter'
 import ProteinSchematic, { DomainFilters, ColorMode, ViewMode } from '../components/visualization/ProteinSchematic'
 import FusionTranscriptView from '../components/visualization/FusionTranscriptView'
 import MultiLevelView from '../components/visualization/MultiLevelView'
@@ -33,35 +37,15 @@ function FusionCard({
   const { data: vizData, isLoading } = useVisualizationData(sessionId, fusion.id)
 
   const fusionName = `${fusion.gene_a_symbol}--${fusion.gene_b_symbol}`
-
-  const getFrameStatus = () => {
-    if (fusion.is_in_frame === 1) return { status: 'positive' as const, label: 'In-frame' }
-    if (fusion.is_in_frame === 0) return { status: 'negative' as const, label: 'Out-of-frame' }
-    return { status: 'unknown' as const, label: 'Unknown' }
-  }
-
-  const StatusBadge = ({ status, label }: { status: 'positive' | 'negative' | 'unknown'; label: string }) => {
-    const colors = {
-      positive: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
-      negative: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200',
-      unknown: 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200',
-    }
-    return (
-      <span className={`px-2 py-1 text-xs font-medium rounded-full ${colors[status]}`}>
-        {label}
-      </span>
-    )
-  }
+  const frameStatus = getFrameStatus(fusion.is_in_frame)
+  const kinaseStatus = getKinaseStatus(fusion.has_kinase_domain, fusion.kinase_retained)
 
   if (isLoading) {
     return (
       <Card>
         <CardBody>
           <div className="flex items-center justify-center py-12">
-            <svg className="animate-spin h-8 w-8 text-primary-600" fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-            </svg>
+            <LoadingSpinner />
             <span className="ml-2 text-gray-600 dark:text-gray-400">Loading {fusionName}...</span>
           </div>
         </CardBody>
@@ -98,13 +82,8 @@ function FusionCard({
             }`}>
               {fusion.genome_build || 'hg38'}
             </span>
-            <StatusBadge {...getFrameStatus()} />
-            {fusion.has_kinase_domain === 1 && (
-              <StatusBadge
-                status={fusion.kinase_retained === 1 ? 'positive' : fusion.kinase_retained === 0 ? 'negative' : 'unknown'}
-                label={fusion.kinase_retained === 1 ? 'Kinase retained' : fusion.kinase_retained === 0 ? 'Kinase lost' : 'Kinase ?'}
-              />
-            )}
+            <StatusBadge {...frameStatus} />
+            {kinaseStatus && <StatusBadge {...kinaseStatus} />}
           </div>
           <Link
             to={`/session/${sessionId}/fusion/${fusion.id}`}
@@ -214,10 +193,7 @@ export default function BatchView() {
   if (isLoadingFusions) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
-        <svg className="animate-spin h-12 w-12 text-primary-600" fill="none" viewBox="0 0 24 24">
-          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-        </svg>
+        <LoadingSpinner size="lg" />
       </div>
     )
   }
@@ -299,10 +275,7 @@ export default function BatchView() {
 
               {isLoadingDomains && (
                 <span className="text-sm text-gray-500 flex items-center">
-                  <svg className="animate-spin mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
+                  <LoadingSpinner size="sm" className="mr-2" />
                   Loading batch colors...
                 </span>
               )}
@@ -313,38 +286,7 @@ export default function BatchView() {
               <div className="space-y-3 pt-4 border-t border-gray-200 dark:border-gray-700">
                 {/* Row 1: View mode and options */}
                 <div className="flex flex-wrap items-center gap-4">
-                  <div className="flex rounded-lg border border-gray-300 dark:border-gray-600 overflow-hidden">
-                    <button
-                      onClick={() => setViewMode('fusion')}
-                      className={`px-3 py-1.5 text-sm font-medium transition-colors ${
-                        viewMode === 'fusion'
-                          ? 'bg-primary-600 text-white'
-                          : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
-                      }`}
-                    >
-                      Fusion Protein
-                    </button>
-                    <button
-                      onClick={() => setViewMode('full')}
-                      className={`px-3 py-1.5 text-sm font-medium transition-colors ${
-                        viewMode === 'full'
-                          ? 'bg-primary-600 text-white'
-                          : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
-                      }`}
-                    >
-                      Full Proteins
-                    </button>
-                    <button
-                      onClick={() => setViewMode('stacked')}
-                      className={`px-3 py-1.5 text-sm font-medium transition-colors ${
-                        viewMode === 'stacked'
-                          ? 'bg-primary-600 text-white'
-                          : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
-                      }`}
-                    >
-                      Stacked
-                    </button>
-                  </div>
+                  <ViewModeSelector value={viewMode} onChange={setViewMode} />
 
                   <label className="flex items-center space-x-2 text-gray-600 dark:text-gray-400 text-sm">
                     <input
@@ -371,24 +313,11 @@ export default function BatchView() {
                 </div>
 
                 {/* Row 2: Database filter */}
-                {availableSources.length > 1 && (
-                  <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-gray-200 dark:border-gray-700">
-                    <span className="text-xs text-gray-500 dark:text-gray-400 mr-1">Databases:</span>
-                    {availableSources.map(source => (
-                      <button
-                        key={source}
-                        onClick={() => toggleSourceFilter(source)}
-                        className={`px-2 py-0.5 text-xs rounded transition-colors ${
-                          !domainFilters.sources?.length || domainFilters.sources.includes(source)
-                            ? 'bg-primary-100 text-primary-700 dark:bg-primary-900 dark:text-primary-300 border border-primary-300 dark:border-primary-700'
-                            : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-500 border border-gray-300 dark:border-gray-600'
-                        }`}
-                      >
-                        {source}
-                      </button>
-                    ))}
-                  </div>
-                )}
+                <DatabaseFilter
+                  sources={availableSources}
+                  selectedSources={domainFilters.sources || []}
+                  onToggle={toggleSourceFilter}
+                />
               </div>
             )}
           </div>

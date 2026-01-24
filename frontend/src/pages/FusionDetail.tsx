@@ -3,6 +3,10 @@ import { useParams, Link } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import Card, { CardHeader, CardBody } from '../components/common/Card'
 import Button from '../components/common/Button'
+import LoadingSpinner from '../components/common/LoadingSpinner'
+import StatusBadge, { getFrameStatus, getKinaseStatus } from '../components/common/StatusBadge'
+import ViewModeSelector from '../components/common/ViewModeSelector'
+import DatabaseFilter from '../components/common/DatabaseFilter'
 import ProteinSchematic, { DomainFilters, ColorMode, ViewMode } from '../components/visualization/ProteinSchematic'
 import SequenceView from '../components/visualization/SequenceView'
 import DomainDetailPanel from '../components/visualization/DomainDetailPanel'
@@ -192,10 +196,7 @@ export default function FusionDetail() {
   if (isLoadingFusion || isLoadingViz) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
-        <svg className="animate-spin h-12 w-12 text-primary-600" fill="none" viewBox="0 0 24 24">
-          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-        </svg>
+        <LoadingSpinner size="lg" />
       </div>
     )
   }
@@ -229,24 +230,8 @@ export default function FusionDetail() {
     </div>
   )
 
-  const StatusBadge = ({ status, label }: { status: 'positive' | 'negative' | 'unknown'; label: string }) => {
-    const colors = {
-      positive: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
-      negative: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200',
-      unknown: 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200',
-    }
-    return (
-      <span className={`px-2 py-1 text-xs font-medium rounded-full ${colors[status]}`}>
-        {label}
-      </span>
-    )
-  }
-
-  const getFrameStatus = () => {
-    if (fusion.is_in_frame === 1) return { status: 'positive' as const, label: 'In-frame' }
-    if (fusion.is_in_frame === 0) return { status: 'negative' as const, label: 'Out-of-frame' }
-    return { status: 'unknown' as const, label: 'Unknown' }
-  }
+  const frameStatus = getFrameStatus(fusion.is_in_frame)
+  const kinaseStatus = getKinaseStatus(fusion.has_kinase_domain, fusion.kinase_retained)
 
   return (
     <div className="space-y-6">
@@ -277,13 +262,8 @@ export default function FusionDetail() {
             </div>
 
             <div className="mt-4 lg:mt-0 flex flex-wrap items-center gap-2">
-              <StatusBadge {...getFrameStatus()} />
-              {fusion.has_kinase_domain === 1 && (
-                <StatusBadge
-                  status={fusion.kinase_retained === 1 ? 'positive' : fusion.kinase_retained === 0 ? 'negative' : 'unknown'}
-                  label={fusion.kinase_retained === 1 ? 'Kinase retained' : fusion.kinase_retained === 0 ? 'Kinase lost' : 'Kinase status unknown'}
-                />
-              )}
+              <StatusBadge {...frameStatus} />
+              {kinaseStatus && <StatusBadge {...kinaseStatus} />}
               {fusion.confidence && (fusion.junction_reads != null || fusion.spanning_reads != null) && (
                 <StatusBadge
                   status={fusion.confidence === 'high' ? 'positive' : fusion.confidence === 'low' ? 'negative' : 'unknown'}
@@ -299,10 +279,7 @@ export default function FusionDetail() {
               >
                 {isRefreshingDomains ? (
                   <span className="flex items-center">
-                    <svg className="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                    </svg>
+                    <LoadingSpinner size="sm" className="-ml-1 mr-2" />
                     Fetching...
                   </span>
                 ) : (
@@ -367,38 +344,7 @@ export default function FusionDetail() {
             <div className="space-y-3">
               {/* Row 1: View mode and Export */}
               <div className="flex items-center justify-between">
-                <div className="flex rounded-lg border border-gray-300 dark:border-gray-600 overflow-hidden">
-                  <button
-                    onClick={() => setSchematicViewMode('fusion')}
-                    className={`px-3 py-1.5 text-sm font-medium transition-colors ${
-                      schematicViewMode === 'fusion'
-                        ? 'bg-primary-600 text-white'
-                        : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
-                    }`}
-                  >
-                    Fusion Protein
-                  </button>
-                  <button
-                    onClick={() => setSchematicViewMode('full')}
-                    className={`px-3 py-1.5 text-sm font-medium transition-colors ${
-                      schematicViewMode === 'full'
-                        ? 'bg-primary-600 text-white'
-                        : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
-                    }`}
-                  >
-                    Full Proteins
-                  </button>
-                  <button
-                    onClick={() => setSchematicViewMode('stacked')}
-                    className={`px-3 py-1.5 text-sm font-medium transition-colors ${
-                      schematicViewMode === 'stacked'
-                        ? 'bg-primary-600 text-white'
-                        : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
-                    }`}
-                  >
-                    Stacked
-                  </button>
-                </div>
+                <ViewModeSelector value={schematicViewMode} onChange={setSchematicViewMode} />
                 <ExportButtons
                   svgContent={svgContents['schematic'] || null}
                   sequence={fusion.fusion_sequence || null}
@@ -443,36 +389,18 @@ export default function FusionDetail() {
                     />
                     <span className="flex items-center">
                       Batch colors
-                      {isLoadingBatchColors && (
-                        <svg className="animate-spin ml-1 h-3 w-3" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                        </svg>
-                      )}
+                      {isLoadingBatchColors && <LoadingSpinner size="sm" className="ml-1" />}
                     </span>
                   </label>
                 )}
               </div>
 
               {/* Row 3: Database filter */}
-              {availableSources.length > 1 && (
-                <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-gray-200 dark:border-gray-700">
-                  <span className="text-xs text-gray-500 dark:text-gray-400 mr-1">Databases:</span>
-                  {availableSources.map(source => (
-                    <button
-                      key={source}
-                      onClick={() => toggleSourceFilter(source)}
-                      className={`px-2 py-0.5 text-xs rounded transition-colors ${
-                        !domainFilters.sources?.length || domainFilters.sources.includes(source)
-                          ? 'bg-primary-100 text-primary-700 dark:bg-primary-900 dark:text-primary-300 border border-primary-300 dark:border-primary-700'
-                          : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-500 border border-gray-300 dark:border-gray-600'
-                      }`}
-                    >
-                      {source}
-                    </button>
-                  ))}
-                </div>
-              )}
+              <DatabaseFilter
+                sources={availableSources}
+                selectedSources={domainFilters.sources || []}
+                onToggle={toggleSourceFilter}
+              />
             </div>
           </CardHeader>
           <CardBody>
@@ -550,10 +478,7 @@ export default function FusionDetail() {
             <div className="space-y-4">
               {isLoadingMutations ? (
                 <div className="flex items-center justify-center py-12">
-                  <svg className="animate-spin h-8 w-8 text-primary-600" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
+                  <LoadingSpinner />
                   <span className="ml-2 text-gray-600 dark:text-gray-400">Loading mutation data from cBioPortal...</span>
                 </div>
               ) : mutations.length === 0 ? (
