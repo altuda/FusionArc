@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import Button from '../common/Button'
 import { FusionManualInput, GenomeBuild, createBatchFusions } from '../../api/client'
 
@@ -17,6 +18,7 @@ type InputMode = 'form' | 'text'  // 'text' mode handles both single and batch i
 
 export default function ManualInput({ onSubmit, isLoading, sessionId }: ManualInputProps) {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const [inputMode, setInputMode] = useState<InputMode>('form')
   const [textInput, setTextInput] = useState('')
   const [genomeBuild, setGenomeBuild] = useState<GenomeBuild>('hg38')
@@ -159,6 +161,8 @@ export default function ManualInput({ onSubmit, isLoading, sessionId }: ManualIn
         }).join('\n')
 
         const session = await createBatchFusions(batchContent, sessionId)
+        // Invalidate queries to refresh fusion list
+        await queryClient.invalidateQueries({ queryKey: ['fusions'] })
         navigate(`/session/${session.id}`)
       } catch (error) {
         setTextError(error instanceof Error ? error.message : 'Failed to create fusions')

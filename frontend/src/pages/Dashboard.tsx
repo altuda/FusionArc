@@ -87,7 +87,8 @@ export default function Dashboard() {
       setShowCreateBatchModal(false)
       setBatchName('')
       setSelectedFusionIds(new Set())
-      navigate(`/session/${session.id}`)
+      // Navigate to the batch view page to see all fusions stacked
+      navigate(`/session/${session.id}/batch`)
     } catch (error) {
       console.error('Failed to create batch:', error)
     } finally {

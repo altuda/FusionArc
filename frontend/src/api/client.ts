@@ -242,6 +242,23 @@ export async function getSessionDomains(sessionId: string): Promise<string[]> {
   return response.data
 }
 
+export async function getSessionDomainSources(sessionId: string): Promise<string[]> {
+  const response = await apiClient.get<string[]>(`/fusions/${sessionId}/domain-sources`)
+  return response.data
+}
+
+export interface SessionDomainInfo {
+  name: string
+  source: string
+  status: string
+  is_kinase: boolean
+}
+
+export async function getSessionDomainsInfo(sessionId: string): Promise<SessionDomainInfo[]> {
+  const response = await apiClient.get<SessionDomainInfo[]>(`/fusions/${sessionId}/domains-info`)
+  return response.data
+}
+
 export async function getFusionMutations(sessionId: string, fusionId: string): Promise<MutationResponse> {
   const response = await apiClient.get<MutationResponse>(`/fusions/${sessionId}/${fusionId}/mutations`)
   return response.data

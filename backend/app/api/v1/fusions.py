@@ -436,6 +436,13 @@ async def list_fusions(
     )
 
 
+class SessionDomainInfo(BaseModel):
+    name: str
+    source: str
+    status: str = "unknown"
+    is_kinase: bool = False
+
+
 @router.get("/{session_id}/domains", response_model=List[str])
 async def get_session_domains(
     session_id: str,
@@ -461,6 +468,72 @@ async def get_session_domains(
                 domain_names.add(domain["name"])
 
     return sorted(list(domain_names))
+
+
+@router.get("/{session_id}/domains-info", response_model=List[SessionDomainInfo])
+async def get_session_domains_info(
+    session_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get all unique domains with full info from all fusions in a session.
+
+    Used for batch legend with source filtering.
+    """
+    result = await db.execute(
+        select(Fusion).where(Fusion.session_id == session_id)
+    )
+    fusions = result.scalars().all()
+
+    # Collect all unique domains by name (keep first occurrence with full info)
+    domains_by_name: dict = {}
+    for fusion in fusions:
+        for domain in (fusion.domains_a or []):
+            name = domain.get("name")
+            if name and name not in domains_by_name:
+                domains_by_name[name] = SessionDomainInfo(
+                    name=name,
+                    source=domain.get("source", ""),
+                    status=domain.get("status", "unknown"),
+                    is_kinase=domain.get("is_kinase", False)
+                )
+        for domain in (fusion.domains_b or []):
+            name = domain.get("name")
+            if name and name not in domains_by_name:
+                domains_by_name[name] = SessionDomainInfo(
+                    name=name,
+                    source=domain.get("source", ""),
+                    status=domain.get("status", "unknown"),
+                    is_kinase=domain.get("is_kinase", False)
+                )
+
+    return sorted(domains_by_name.values(), key=lambda d: d.name)
+
+
+@router.get("/{session_id}/domain-sources", response_model=List[str])
+async def get_session_domain_sources(
+    session_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get all unique domain sources (databases) from all fusions in a session.
+
+    Used for batch filtering by database.
+    """
+    result = await db.execute(
+        select(Fusion).where(Fusion.session_id == session_id)
+    )
+    fusions = result.scalars().all()
+
+    # Collect all unique domain sources
+    sources = set()
+    for fusion in fusions:
+        for domain in (fusion.domains_a or []):
+            if domain.get("source"):
+                sources.add(domain["source"])
+        for domain in (fusion.domains_b or []):
+            if domain.get("source"):
+                sources.add(domain["source"])
+
+    return sorted(list(sources))
 
 
 @router.get("/{session_id}/{fusion_id}", response_model=FusionDetailResponse)
