@@ -248,7 +248,8 @@ class InterProClient:
         seen = set()
         unique_domains = []
         for d in domains:
-            key = (d["name"].lower(), d["start"], d["end"])
+            name = d.get("name") or "Unknown"
+            key = (name.lower(), d["start"], d["end"])
             if key not in seen:
                 seen.add(key)
                 unique_domains.append(d)

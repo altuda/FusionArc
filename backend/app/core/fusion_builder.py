@@ -373,9 +373,13 @@ class FusionBuilder:
         gene_symbol: Optional[str] = None
     ) -> Optional[Protein]:
         """Cache protein and its domains from multiple sources."""
-        protein_id = trans_data.get("id")
-        if not protein_id:
+        raw_protein_id = trans_data.get("id")
+        if not raw_protein_id:
             return None
+
+        # Use composite protein ID with genome build to avoid conflicts
+        genome_build = self.ensembl.genome_build
+        protein_id = f"{raw_protein_id}_{genome_build}"
 
         result = await self.db.execute(
             select(Protein).where(Protein.id == protein_id)
@@ -388,8 +392,8 @@ class FusionBuilder:
         protein.transcript_id = transcript_id
         protein.length = trans_data.get("length")
 
-        # Fetch sequence
-        seq = await self.ensembl.get_protein_sequence(protein_id)
+        # Fetch sequence (use raw ID for API call)
+        seq = await self.ensembl.get_protein_sequence(raw_protein_id)
         if seq:
             protein.sequence = seq
 
@@ -398,8 +402,8 @@ class FusionBuilder:
         self.db.add(protein)
         await self.db.commit()
 
-        # Fetch domains from Ensembl
-        features = await self.ensembl.get_protein_features(protein_id)
+        # Fetch domains from Ensembl (use raw ID for API call, composite ID for storage)
+        features = await self.ensembl.get_protein_features(raw_protein_id)
         for feat in features:
             await self._cache_domain(protein_id, feat)
 

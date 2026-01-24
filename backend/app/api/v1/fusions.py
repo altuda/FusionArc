@@ -114,17 +114,28 @@ async def upload_fusion_file(
 @router.post("/manual", response_model=FusionDetailResponse)
 async def create_manual_fusion(
     input_data: FusionManualInput,
+    session_id: Optional[str] = None,
     db: AsyncSession = Depends(get_db)
 ):
-    """Create a fusion from manual input."""
+    """Create a fusion from manual input.
+
+    Args:
+        input_data: The fusion input data
+        session_id: Optional session ID to add fusion to. If provided, adds to existing session.
+                   If not provided, creates a new session.
+    """
     # Parse manual input
     fusion_data = ManualInputParser.parse_manual_input(input_data)
 
-    # Create or get default session
-    result = await db.execute(
-        select(Session).where(Session.source == "manual").order_by(Session.created_at.desc())
-    )
-    session = result.scalars().first()
+    # Use provided session or create new one
+    session = None
+    if session_id:
+        result = await db.execute(
+            select(Session).where(Session.id == session_id)
+        )
+        session = result.scalars().first()
+        if not session:
+            raise HTTPException(404, f"Session {session_id} not found")
 
     if not session:
         session = Session(name="Manual Input", source="manual")

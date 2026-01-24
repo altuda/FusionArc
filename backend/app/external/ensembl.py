@@ -20,6 +20,12 @@ class EnsemblClient:
         self.base_url = ENSEMBL_URLS.get(genome_build, ENSEMBL_URLS["hg38"])
         self._semaphore = asyncio.Semaphore(self.settings.ensembl_rate_limit)
 
+    def _strip_genome_suffix(self, ensembl_id: str) -> str:
+        """Strip genome build suffix from composite ID (e.g., 'ENST00000305877_hg38' -> 'ENST00000305877')."""
+        if ensembl_id and "_hg" in ensembl_id:
+            return ensembl_id.rsplit("_", 1)[0]
+        return ensembl_id
+
     async def _request(self, endpoint: str, params: Optional[Dict] = None) -> Dict[str, Any]:
         """Make a rate-limited request to Ensembl API."""
         async with self._semaphore:
@@ -46,7 +52,8 @@ class EnsemblClient:
     async def get_gene_by_id(self, gene_id: str) -> Optional[Dict[str, Any]]:
         """Get gene information by Ensembl ID."""
         try:
-            endpoint = f"/lookup/id/{gene_id}"
+            ensembl_id = self._strip_genome_suffix(gene_id)
+            endpoint = f"/lookup/id/{ensembl_id}"
             params = {"expand": 1}
             return await self._request(endpoint, params)
         except httpx.HTTPStatusError as e:
@@ -58,7 +65,8 @@ class EnsemblClient:
     async def get_transcript(self, transcript_id: str) -> Optional[Dict[str, Any]]:
         """Get transcript information with exons."""
         try:
-            endpoint = f"/lookup/id/{transcript_id}"
+            ensembl_id = self._strip_genome_suffix(transcript_id)
+            endpoint = f"/lookup/id/{ensembl_id}"
             params = {"expand": 1, "utr": 1}
             return await self._request(endpoint, params)
         except httpx.HTTPStatusError as e:
@@ -70,7 +78,9 @@ class EnsemblClient:
     async def get_exons(self, transcript_id: str) -> List[Dict[str, Any]]:
         """Get exon information for a transcript."""
         try:
-            endpoint = f"/overlap/id/{transcript_id}"
+            # Strip genome build suffix if present
+            ensembl_id = self._strip_genome_suffix(transcript_id)
+            endpoint = f"/overlap/id/{ensembl_id}"
             params = {"feature": "exon"}
             return await self._request(endpoint, params)
         except httpx.HTTPStatusError as e:
@@ -82,7 +92,8 @@ class EnsemblClient:
     async def get_protein_sequence(self, protein_id: str) -> Optional[str]:
         """Get protein sequence."""
         try:
-            endpoint = f"/sequence/id/{protein_id}"
+            ensembl_id = self._strip_genome_suffix(protein_id)
+            endpoint = f"/sequence/id/{ensembl_id}"
             params = {"type": "protein"}
             async with self._semaphore:
                 async with httpx.AsyncClient(timeout=30.0) as client:
@@ -100,7 +111,8 @@ class EnsemblClient:
     async def get_protein_features(self, protein_id: str) -> List[Dict[str, Any]]:
         """Get protein features/domains from Ensembl."""
         try:
-            endpoint = f"/overlap/translation/{protein_id}"
+            ensembl_id = self._strip_genome_suffix(protein_id)
+            endpoint = f"/overlap/translation/{ensembl_id}"
             params = {"feature": "protein_feature"}
             return await self._request(endpoint, params)
         except httpx.HTTPStatusError as e:
@@ -112,7 +124,8 @@ class EnsemblClient:
     async def get_cds(self, transcript_id: str) -> Optional[Dict[str, Any]]:
         """Get CDS coordinates for a transcript."""
         try:
-            endpoint = f"/lookup/id/{transcript_id}"
+            ensembl_id = self._strip_genome_suffix(transcript_id)
+            endpoint = f"/lookup/id/{ensembl_id}"
             params = {"expand": 1}
             data = await self._request(endpoint, params)
 
