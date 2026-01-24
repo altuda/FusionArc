@@ -11,6 +11,12 @@ class GenomicToProteinMapper:
     def __init__(self, ensembl_client: EnsemblClient):
         self.ensembl = ensembl_client
 
+    def _strip_genome_suffix(self, transcript_id: str) -> str:
+        """Strip genome build suffix from composite ID (e.g., 'ENST00000305877_hg38' -> 'ENST00000305877')."""
+        if "_hg" in transcript_id:
+            return transcript_id.rsplit("_", 1)[0]
+        return transcript_id
+
     async def map_genomic_to_aa(
         self,
         chromosome: str,
@@ -30,8 +36,9 @@ class GenomicToProteinMapper:
         Returns:
             Amino acid position (1-based) or None if not in coding region
         """
-        # Get transcript with exons
-        transcript = await self.ensembl.get_transcript(transcript_id)
+        # Get transcript with exons (strip composite ID suffix if present)
+        ensembl_id = self._strip_genome_suffix(transcript_id)
+        transcript = await self.ensembl.get_transcript(ensembl_id)
         if not transcript:
             return None
 
@@ -145,7 +152,8 @@ class GenomicToProteinMapper:
         transcript_id: str
     ) -> Optional[Dict[str, Any]]:
         """Get the exon containing a genomic position."""
-        transcript = await self.ensembl.get_transcript(transcript_id)
+        ensembl_id = self._strip_genome_suffix(transcript_id)
+        transcript = await self.ensembl.get_transcript(ensembl_id)
         if not transcript:
             return None
 
@@ -173,7 +181,8 @@ class GenomicToProteinMapper:
             logger.debug(f"calculate_frame: aa_pos is None for {transcript_id} at position {position}")
             return None
 
-        transcript = await self.ensembl.get_transcript(transcript_id)
+        ensembl_id = self._strip_genome_suffix(transcript_id)
+        transcript = await self.ensembl.get_transcript(ensembl_id)
         if not transcript:
             logger.warning(f"calculate_frame: transcript not found for {transcript_id}")
             return None
@@ -265,8 +274,14 @@ class GenomicToProteinMapper:
         from breakpoint to end (3' gene).
 
         This handles intronic breakpoints by finding the nearest exon boundary.
+
+        Algorithm:
+        1. Always iterate exons in genomic order (low-to-high coordinates)
+        2. Calculate CDS length before breakpoint in genomic direction
+        3. Apply strand conversion ONCE at the end
         """
-        transcript = await self.ensembl.get_transcript(transcript_id)
+        ensembl_id = self._strip_genome_suffix(transcript_id)
+        transcript = await self.ensembl.get_transcript(ensembl_id)
         if not transcript:
             logger.warning(f"_get_cds_length: transcript not found for {transcript_id}")
             return None
@@ -285,12 +300,12 @@ class GenomicToProteinMapper:
 
         is_negative_strand = strand == "-"
 
-        # Sort exons by genomic position
+        # Always sort exons in genomic order (low-to-high coordinates)
         sorted_exons = sorted(exons, key=lambda e: e["start"])
 
         # Calculate CDS length and find where breakpoint falls
         total_cds_length = 0
-        cds_before_breakpoint = 0
+        cds_before_breakpoint_genomic = 0  # In genomic (5'->3' of + strand) direction
         breakpoint_found = False
 
         for exon in sorted_exons:
@@ -309,30 +324,29 @@ class GenomicToProteinMapper:
             if not breakpoint_found:
                 if breakpoint < coding_start:
                     # Breakpoint is before this exon (in upstream intron or UTR)
-                    # For 5' gene: include nothing from this exon onwards
-                    # For 3' gene: include from this exon onwards
                     breakpoint_found = True
                 elif breakpoint <= coding_end:
                     # Breakpoint is within this exon
-                    if is_negative_strand:
-                        cds_before_breakpoint += coding_end - breakpoint + 1
-                    else:
-                        cds_before_breakpoint += breakpoint - coding_start + 1
+                    # Simple genomic calculation - no strand logic here
+                    cds_before_breakpoint_genomic += breakpoint - coding_start + 1
                     breakpoint_found = True
                 else:
                     # Breakpoint is after this exon, include full exon
-                    cds_before_breakpoint += coding_length
+                    cds_before_breakpoint_genomic += coding_length
 
             total_cds_length += coding_length
 
         # Handle breakpoint after all exons
         if not breakpoint_found:
-            cds_before_breakpoint = total_cds_length
+            cds_before_breakpoint_genomic = total_cds_length
 
-        # For negative strand, we need to invert
+        # Convert from genomic to transcription direction (ONLY ONCE)
         if is_negative_strand:
-            cds_before_breakpoint = total_cds_length - cds_before_breakpoint
+            cds_before_breakpoint = total_cds_length - cds_before_breakpoint_genomic
+        else:
+            cds_before_breakpoint = cds_before_breakpoint_genomic
 
+        # Return based on 5' or 3' partner
         if is_5prime:
             # 5' gene: return CDS length from start to breakpoint
             result = cds_before_breakpoint
@@ -340,5 +354,5 @@ class GenomicToProteinMapper:
             # 3' gene: return CDS length from breakpoint to end
             result = total_cds_length - cds_before_breakpoint
 
-        logger.debug(f"_get_cds_length: {transcript_id} breakpoint={breakpoint} is_5prime={is_5prime} -> {result}")
+        logger.debug(f"_get_cds_length: {transcript_id} breakpoint={breakpoint} is_5prime={is_5prime} total_cds={total_cds_length} genomic_before={cds_before_breakpoint_genomic} -> {result}")
         return result

@@ -15,6 +15,7 @@ class Gene(Base):
     end = Column(Integer)
     strand = Column(Integer)
     biotype = Column(String(50))
+    genome_build = Column(String(10), default="hg38")  # hg38 or hg19
     cached_at = Column(DateTime, default=datetime.utcnow)
 
     transcripts = relationship("Transcript", back_populates="gene", cascade="all, delete-orphan")
@@ -41,8 +42,10 @@ class Transcript(Base):
 class Exon(Base):
     __tablename__ = "exons"
 
-    id = Column(String(50), primary_key=True)  # Ensembl exon ID
-    transcript_id = Column(String(50), ForeignKey("transcripts.id"), index=True)
+    # Composite primary key: exon_id + transcript_id
+    # Same exon can belong to multiple transcripts in Ensembl
+    exon_id = Column(String(50), primary_key=True)  # Ensembl exon ID
+    transcript_id = Column(String(50), ForeignKey("transcripts.id"), primary_key=True, index=True)
     rank = Column(Integer)
     start = Column(Integer)
     end = Column(Integer)

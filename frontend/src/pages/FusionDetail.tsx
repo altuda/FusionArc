@@ -22,7 +22,7 @@ export default function FusionDetail() {
   const { sessionId, fusionId } = useParams<{ sessionId: string; fusionId: string }>()
   const queryClient = useQueryClient()
   const [showStrandOrientation, setShowStrandOrientation] = useState(false)
-  const [svgContent, setSvgContent] = useState<string | null>(null)
+  const [svgContents, setSvgContents] = useState<Record<string, string | null>>({})
   const [activeTab, setActiveTab] = useState<'schematic' | 'transcript' | 'multilevel' | 'mutations' | 'sequence' | 'domains'>('schematic')
   const [isRefreshingDomains, setIsRefreshingDomains] = useState(false)
   const [schematicViewMode, setSchematicViewMode] = useState<ViewMode>('fusion')
@@ -133,9 +133,13 @@ export default function FusionDetail() {
     return result
   }, [vizData, mutationData])
 
-  const handleSvgReady = useCallback((svg: string) => {
-    setSvgContent(svg)
-  }, [])
+  // Create stable handlers for each tab to track their SVG content
+  const svgHandlers = useMemo(() => ({
+    schematic: (svg: string) => setSvgContents(prev => ({ ...prev, schematic: svg })),
+    transcript: (svg: string) => setSvgContents(prev => ({ ...prev, transcript: svg })),
+    multilevel: (svg: string) => setSvgContents(prev => ({ ...prev, multilevel: svg })),
+    mutations: (svg: string) => setSvgContents(prev => ({ ...prev, mutations: svg })),
+  }), [])
 
   // Create shared domain color map for consistent colors across all visualizations
   const domainColorMap = useMemo(() => {
@@ -360,104 +364,108 @@ export default function FusionDetail() {
       {activeTab === 'schematic' && vizData && (
         <Card>
           <CardHeader>
-            <div className="space-y-2">
+            <div className="space-y-3">
+              {/* Row 1: View mode and Export */}
               <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-4">
-                  {/* View mode toggle */}
-                  <div className="flex rounded-lg border border-gray-300 dark:border-gray-600 overflow-hidden">
-                    <button
-                      onClick={() => setSchematicViewMode('fusion')}
-                      className={`px-3 py-1 text-sm font-medium transition-colors ${
-                        schematicViewMode === 'fusion'
-                          ? 'bg-primary-600 text-white'
-                          : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
-                      }`}
-                    >
-                      Fusion Protein
-                    </button>
-                    <button
-                      onClick={() => setSchematicViewMode('full')}
-                      className={`px-3 py-1 text-sm font-medium transition-colors ${
-                        schematicViewMode === 'full'
-                          ? 'bg-primary-600 text-white'
-                          : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
-                      }`}
-                    >
-                      Full Proteins
-                    </button>
-                    <button
-                      onClick={() => setSchematicViewMode('stacked')}
-                      className={`px-3 py-1 text-sm font-medium transition-colors ${
-                        schematicViewMode === 'stacked'
-                          ? 'bg-primary-600 text-white'
-                          : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
-                      }`}
-                    >
-                      Stacked
-                    </button>
-                  </div>
-                  <label className="flex items-center space-x-2 text-sm text-gray-600 dark:text-gray-400">
-                    <input
-                      type="checkbox"
-                      checked={showStrandOrientation}
-                      onChange={(e) => setShowStrandOrientation(e.target.checked)}
-                      className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                    />
-                    <span>Show strand</span>
-                  </label>
-                  <div className="flex items-center space-x-2 text-sm text-gray-600 dark:text-gray-400">
-                    <span>Color by:</span>
-                    <select
-                      value={domainFilters.colorMode || 'domain'}
-                      onChange={(e) => setDomainFilters(prev => ({ ...prev, colorMode: e.target.value as ColorMode }))}
-                      className="text-sm px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300"
-                    >
-                      <option value="domain">By domain name (consistent)</option>
-                      <option value="type">By feature type</option>
-                      <option value="source">By database</option>
-                    </select>
-                  </div>
-                  {/* Batch colors toggle - only show when color mode is 'domain' */}
-                  {domainFilters.colorMode === 'domain' && (
-                    <label className="flex items-center space-x-2 text-sm text-gray-600 dark:text-gray-400">
-                      <input
-                        type="checkbox"
-                        checked={useBatchColors}
-                        onChange={(e) => handleBatchColorsToggle(e.target.checked)}
-                        disabled={isLoadingBatchColors}
-                        className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                      />
-                      <span className="flex items-center">
-                        Batch colors
-                        {isLoadingBatchColors && (
-                          <svg className="animate-spin ml-1 h-3 w-3" fill="none" viewBox="0 0 24 24">
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                          </svg>
-                        )}
-                      </span>
-                    </label>
-                  )}
+                <div className="flex rounded-lg border border-gray-300 dark:border-gray-600 overflow-hidden">
+                  <button
+                    onClick={() => setSchematicViewMode('fusion')}
+                    className={`px-3 py-1.5 text-sm font-medium transition-colors ${
+                      schematicViewMode === 'fusion'
+                        ? 'bg-primary-600 text-white'
+                        : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
+                    }`}
+                  >
+                    Fusion Protein
+                  </button>
+                  <button
+                    onClick={() => setSchematicViewMode('full')}
+                    className={`px-3 py-1.5 text-sm font-medium transition-colors ${
+                      schematicViewMode === 'full'
+                        ? 'bg-primary-600 text-white'
+                        : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
+                    }`}
+                  >
+                    Full Proteins
+                  </button>
+                  <button
+                    onClick={() => setSchematicViewMode('stacked')}
+                    className={`px-3 py-1.5 text-sm font-medium transition-colors ${
+                      schematicViewMode === 'stacked'
+                        ? 'bg-primary-600 text-white'
+                        : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
+                    }`}
+                  >
+                    Stacked
+                  </button>
                 </div>
                 <ExportButtons
-                  svgContent={svgContent}
+                  svgContent={svgContents['schematic'] || null}
                   sequence={fusion.fusion_sequence || null}
                   fusionName={fusionName}
                   legendItems={domainFilters.colorMode === 'domain' ? legendItems : []}
                 />
               </div>
-              {/* Source filter - only show if multiple sources */}
+
+              {/* Row 2: Options */}
+              <div className="flex flex-wrap items-center gap-4 text-sm">
+                <label className="flex items-center space-x-2 text-gray-600 dark:text-gray-400">
+                  <input
+                    type="checkbox"
+                    checked={showStrandOrientation}
+                    onChange={(e) => setShowStrandOrientation(e.target.checked)}
+                    className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                  />
+                  <span>Show strand</span>
+                </label>
+
+                <div className="flex items-center space-x-2 text-gray-600 dark:text-gray-400">
+                  <span>Color by:</span>
+                  <select
+                    value={domainFilters.colorMode || 'domain'}
+                    onChange={(e) => setDomainFilters(prev => ({ ...prev, colorMode: e.target.value as ColorMode }))}
+                    className="text-sm px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300"
+                  >
+                    <option value="domain">Domain name</option>
+                    <option value="type">Feature type</option>
+                    <option value="source">Database</option>
+                  </select>
+                </div>
+
+                {domainFilters.colorMode === 'domain' && (
+                  <label className="flex items-center space-x-2 text-gray-600 dark:text-gray-400">
+                    <input
+                      type="checkbox"
+                      checked={useBatchColors}
+                      onChange={(e) => handleBatchColorsToggle(e.target.checked)}
+                      disabled={isLoadingBatchColors}
+                      className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                    />
+                    <span className="flex items-center">
+                      Batch colors
+                      {isLoadingBatchColors && (
+                        <svg className="animate-spin ml-1 h-3 w-3" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                      )}
+                    </span>
+                  </label>
+                )}
+              </div>
+
+              {/* Row 3: Database filter */}
               {availableSources.length > 1 && (
-                <div className="flex flex-wrap items-center gap-1 pt-2 border-t border-gray-200 dark:border-gray-700">
+                <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-gray-200 dark:border-gray-700">
                   <span className="text-xs text-gray-500 dark:text-gray-400 mr-1">Databases:</span>
                   {availableSources.map(source => (
                     <button
                       key={source}
                       onClick={() => toggleSourceFilter(source)}
-                      className={`px-1.5 py-0.5 text-xs rounded transition-colors ${
+                      className={`px-2 py-0.5 text-xs rounded transition-colors ${
                         !domainFilters.sources?.length || domainFilters.sources.includes(source)
-                          ? 'bg-primary-100 text-primary-700 dark:bg-primary-900 dark:text-primary-300'
-                          : 'bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-500'
+                          ? 'bg-primary-100 text-primary-700 dark:bg-primary-900 dark:text-primary-300 border border-primary-300 dark:border-primary-700'
+                          : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-500 border border-gray-300 dark:border-gray-600'
                       }`}
                     >
                       {source}
@@ -472,7 +480,7 @@ export default function FusionDetail() {
               data={vizData}
               filters={domainFilters}
               showStrandOrientation={showStrandOrientation}
-              onSvgReady={handleSvgReady}
+              onSvgReady={svgHandlers.schematic}
               domainColorMap={domainColorMap}
               viewMode={schematicViewMode}
             />
@@ -491,50 +499,92 @@ export default function FusionDetail() {
       )}
 
       {activeTab === 'transcript' && vizData && (
-        <FusionTranscriptView data={vizData} />
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <h3 className="font-medium text-gray-900 dark:text-white">Fusion Transcript</h3>
+              <ExportButtons
+                svgContent={svgContents['transcript'] || null}
+                sequence={null}
+                fusionName={`${fusionName}-transcript`}
+              />
+            </div>
+          </CardHeader>
+          <CardBody>
+            <FusionTranscriptView data={vizData} onSvgReady={svgHandlers.transcript} />
+          </CardBody>
+        </Card>
       )}
 
       {activeTab === 'multilevel' && vizData && (
-        <MultiLevelView data={vizData} domainColorMap={domainColorMap} />
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <h3 className="font-medium text-gray-900 dark:text-white">Multi-Level View</h3>
+              <ExportButtons
+                svgContent={svgContents['multilevel'] || null}
+                sequence={null}
+                fusionName={`${fusionName}-multilevel`}
+              />
+            </div>
+          </CardHeader>
+          <CardBody>
+            <MultiLevelView data={vizData} domainColorMap={domainColorMap} onSvgReady={svgHandlers.multilevel} />
+          </CardBody>
+        </Card>
       )}
 
       {activeTab === 'mutations' && vizData && (
-        <div className="space-y-4">
-          {isLoadingMutations ? (
-            <div className="flex items-center justify-center py-12">
-              <svg className="animate-spin h-8 w-8 text-primary-600" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-              <span className="ml-2 text-gray-600 dark:text-gray-400">Loading mutation data from cBioPortal...</span>
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <h3 className="font-medium text-gray-900 dark:text-white">Mutation Lollipop Plot</h3>
+              <ExportButtons
+                svgContent={svgContents['mutations'] || null}
+                sequence={null}
+                fusionName={`${fusionName}-mutations`}
+              />
             </div>
-          ) : mutations.length === 0 ? (
-            <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
-              <div className="flex items-start">
-                <svg className="w-5 h-5 text-blue-500 mt-0.5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                <div className="text-sm text-blue-700 dark:text-blue-300">
-                  <p className="font-medium">No mutations found</p>
-                  <p className="mt-1">No mutation data found in cBioPortal for the retained regions of these genes. This could mean these regions have low mutation rates or the genes are not well-covered in the available studies.</p>
+          </CardHeader>
+          <CardBody>
+            <div className="space-y-4">
+              {isLoadingMutations ? (
+                <div className="flex items-center justify-center py-12">
+                  <svg className="animate-spin h-8 w-8 text-primary-600" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  <span className="ml-2 text-gray-600 dark:text-gray-400">Loading mutation data from cBioPortal...</span>
                 </div>
-              </div>
-            </div>
-          ) : (
-            <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-4">
-              <div className="flex items-start">
-                <svg className="w-5 h-5 text-green-500 mt-0.5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                <div className="text-sm text-green-700 dark:text-green-300">
-                  <p className="font-medium">Real Mutation Data from cBioPortal</p>
-                  <p className="mt-1">Showing {mutations.length} mutations from TCGA, MSK-IMPACT, and other cancer genomics studies. Only mutations in the retained regions of the fusion protein are displayed.</p>
+              ) : mutations.length === 0 ? (
+                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+                  <div className="flex items-start">
+                    <svg className="w-5 h-5 text-blue-500 mt-0.5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <div className="text-sm text-blue-700 dark:text-blue-300">
+                      <p className="font-medium">No mutations found</p>
+                      <p className="mt-1">No mutation data found in cBioPortal for the retained regions of these genes. This could mean these regions have low mutation rates or the genes are not well-covered in the available studies.</p>
+                    </div>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-4">
+                  <div className="flex items-start">
+                    <svg className="w-5 h-5 text-green-500 mt-0.5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <div className="text-sm text-green-700 dark:text-green-300">
+                      <p className="font-medium">Real Mutation Data from cBioPortal</p>
+                      <p className="mt-1">Showing {mutations.length} mutations from TCGA, MSK-IMPACT, and other cancer genomics studies. Only mutations in the retained regions of the fusion protein are displayed.</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+              <LollipopPlot data={vizData} mutations={mutations} domainColorMap={domainColorMap} onSvgReady={svgHandlers.mutations} />
             </div>
-          )}
-          <LollipopPlot data={vizData} mutations={mutations} domainColorMap={domainColorMap} />
-        </div>
+          </CardBody>
+        </Card>
       )}
 
       {activeTab === 'sequence' && fusion.fusion_sequence && vizData && (

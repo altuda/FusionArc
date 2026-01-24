@@ -9,6 +9,7 @@ interface LollipopPlotProps {
   mutations: MutationInfo[]
   height?: number
   domainColorMap?: DomainColorMap  // Optional shared color map for consistency
+  onSvgReady?: (svg: string) => void
 }
 
 // Color scheme for mutation types (matching ProteinPaint style)
@@ -32,7 +33,7 @@ const MUTATION_LABELS: Record<MutationType, string> = {
   other: 'Other',
 }
 
-export default function LollipopPlot({ data, mutations, height = 300, domainColorMap }: LollipopPlotProps) {
+export default function LollipopPlot({ data, mutations, height = 300, domainColorMap, onSvgReady }: LollipopPlotProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
   const { theme } = useTheme()
@@ -263,7 +264,14 @@ export default function LollipopPlot({ data, mutations, height = 300, domainColo
       .attr('font-weight', 'bold')
       .text(`${data.fusion_name} - Mutation Lollipop Plot`)
 
-  }, [data, groupedMutations, theme, height, localColorMap])
+    // Notify parent of SVG content
+    if (onSvgReady && svgRef.current) {
+      const svgClone = svgRef.current.cloneNode(true) as SVGSVGElement
+      const serializer = new XMLSerializer()
+      onSvgReady(serializer.serializeToString(svgClone))
+    }
+
+  }, [data, groupedMutations, theme, height, localColorMap, onSvgReady])
 
   const toggleType = (type: MutationType) => {
     setVisibleTypes(prev => {
@@ -278,7 +286,7 @@ export default function LollipopPlot({ data, mutations, height = 300, domainColo
   }
 
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-lg p-4">
+    <div className="relative">
       <div ref={containerRef} className="relative">
         <svg ref={svgRef} className="w-full" />
 

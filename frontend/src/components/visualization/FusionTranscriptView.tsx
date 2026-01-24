@@ -5,9 +5,10 @@ import { useTheme } from '../../context/ThemeContext'
 
 interface FusionTranscriptViewProps {
   data: VisualizationData
+  onSvgReady?: (svg: string) => void
 }
 
-export default function FusionTranscriptView({ data }: FusionTranscriptViewProps) {
+export default function FusionTranscriptView({ data, onSvgReady }: FusionTranscriptViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
   const { theme } = useTheme()
@@ -184,21 +185,25 @@ export default function FusionTranscriptView({ data }: FusionTranscriptViewProps
       .attr('font-size', '11px')
       .text(`Fusion transcript length: ${transcript.total_length.toLocaleString()} bp`)
 
-  }, [data, theme])
+    // Notify parent of SVG content
+    if (onSvgReady && svgRef.current) {
+      const svgClone = svgRef.current.cloneNode(true) as SVGSVGElement
+      const serializer = new XMLSerializer()
+      onSvgReady(serializer.serializeToString(svgClone))
+    }
+
+  }, [data, theme, onSvgReady])
 
   if (!data.fusion_transcript) {
     return (
-      <div className="bg-white dark:bg-gray-800 rounded-lg p-4 text-center text-gray-500">
+      <div className="text-center text-gray-500 dark:text-gray-400 py-8">
         Transcript data not available
       </div>
     )
   }
 
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-lg p-4">
-      <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
-        Fusion Transcript
-      </h3>
+    <div className="relative">
       <div ref={containerRef} className="relative">
         <svg ref={svgRef} className="w-full" />
 

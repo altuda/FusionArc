@@ -8,7 +8,7 @@ interface ManualInputProps {
   isLoading?: boolean
 }
 
-type InputMode = 'form' | 'oneliner' | 'batch'
+type InputMode = 'form' | 'text'  // 'text' mode handles both single and batch input
 
 // Unified format uses commas: chr22,23524427,+
 // One-liner format: BCR,chr22,23524427,+::ABL1,chr9,133729449,+
@@ -17,11 +17,10 @@ type InputMode = 'form' | 'oneliner' | 'batch'
 export default function ManualInput({ onSubmit, isLoading }: ManualInputProps) {
   const navigate = useNavigate()
   const [inputMode, setInputMode] = useState<InputMode>('form')
-  const [oneliner, setOneliner] = useState('')
-  const [batchInput, setBatchInput] = useState('')
+  const [textInput, setTextInput] = useState('')
   const [genomeBuild, setGenomeBuild] = useState<GenomeBuild>('hg38')
-  const [batchLoading, setBatchLoading] = useState(false)
-  const [batchError, setBatchError] = useState<string | null>(null)
+  const [textLoading, setTextLoading] = useState(false)
+  const [textError, setTextError] = useState<string | null>(null)
 
   const [formData, setFormData] = useState({
     gene_a_symbol: '',
@@ -81,8 +80,8 @@ export default function ManualInput({ onSubmit, isLoading }: ManualInputProps) {
     }
   }
 
-  // Parse batch input to count valid fusions
-  const parseBatchInput = (value: string) => {
+  // Parse text input to count valid fusions (handles single or multiple lines)
+  const parseTextInput = (value: string) => {
     const lines = value.trim().split('\n').filter(line => line.trim())
     const validFusions: string[] = []
 
@@ -95,22 +94,15 @@ export default function ManualInput({ onSubmit, isLoading }: ManualInputProps) {
     return validFusions
   }
 
-  // Sync form to one-liner when form changes
+  // Sync form to text input when form changes
   useEffect(() => {
     if (inputMode === 'form') {
-      setOneliner(formToOneliner())
+      const oneliner = formToOneliner()
+      if (oneliner) {
+        setTextInput(oneliner)
+      }
     }
   }, [formData, inputMode])
-
-  // Handle one-liner change
-  const handleOnelinerChange = (value: string) => {
-    setOneliner(value)
-    const parsed = parseOneliner(value)
-    if (parsed) {
-      setFormData(parsed)
-      setErrors({})
-    }
-  }
 
   const validateForm = () => {
     const newErrors: Record<string, string> = {}
@@ -137,18 +129,10 @@ export default function ManualInput({ onSubmit, isLoading }: ManualInputProps) {
     return newErrors
   }
 
-  const validateOneliner = (): Record<string, string> => {
-    const parsed = parseOneliner(oneliner)
-    if (!parsed) {
-      return { oneliner: 'Invalid format. Use: GENE,chr,pos,strand::GENE,chr,pos,strand' }
-    }
-    return {}
-  }
-
-  const validateBatch = (): Record<string, string> => {
-    const validFusions = parseBatchInput(batchInput)
+  const validateTextInput = (): Record<string, string> => {
+    const validFusions = parseTextInput(textInput)
     if (validFusions.length === 0) {
-      return { batch: 'No valid fusions found. Use one fusion per line.' }
+      return { text: 'No valid fusions found. Format: GENE,chr,pos,strand::GENE,chr,pos,strand' }
     }
     return {}
   }
@@ -156,19 +140,18 @@ export default function ManualInput({ onSubmit, isLoading }: ManualInputProps) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
 
-    if (inputMode === 'batch') {
-      const newErrors = validateBatch()
+    if (inputMode === 'text') {
+      const newErrors = validateTextInput()
       if (Object.keys(newErrors).length > 0) {
         setErrors(newErrors)
         return
       }
 
-      // Handle batch submission
-      setBatchLoading(true)
-      setBatchError(null)
+      // Handle text submission (single or multiple fusions)
+      setTextLoading(true)
+      setTextError(null)
       try {
-        // Convert batch to the format backend expects
-        const validFusions = parseBatchInput(batchInput)
+        const validFusions = parseTextInput(textInput)
         const batchContent = validFusions.map(line => {
           const parsed = parseOneliner(line)!
           return `${parsed.gene_a_symbol}::${parsed.gene_b_symbol}\t${parsed.gene_a_chr}:${parsed.gene_a_pos}:${parsed.gene_a_strand}\t${parsed.gene_b_chr}:${parsed.gene_b_pos}:${parsed.gene_b_strand}\t${genomeBuild}`
@@ -177,15 +160,15 @@ export default function ManualInput({ onSubmit, isLoading }: ManualInputProps) {
         const session = await createBatchFusions(batchContent)
         navigate(`/session/${session.id}`)
       } catch (error) {
-        setBatchError(error instanceof Error ? error.message : 'Failed to create fusions')
+        setTextError(error instanceof Error ? error.message : 'Failed to create fusions')
       } finally {
-        setBatchLoading(false)
+        setTextLoading(false)
       }
       return
     }
 
-    const newErrors = inputMode === 'form' ? validateForm() : validateOneliner()
-
+    // Form mode
+    const newErrors = validateForm()
     if (Object.keys(newErrors).length > 0) {
       setErrors(newErrors)
       return
@@ -215,11 +198,12 @@ export default function ManualInput({ onSubmit, isLoading }: ManualInputProps) {
   }
 
   const loadExample = () => {
-    if (inputMode === 'batch') {
-      setBatchInput(`BCR,chr22,23524427,+::ABL1,chr9,133729449,+
+    if (inputMode === 'text') {
+      setTextInput(`BCR,chr22,23524427,+::ABL1,chr9,133729449,+
 EML4,chr2,42522654,+::ALK,chr2,29446394,-
 TMPRSS2,chr21,41498118,-::ERG,chr21,38380027,-`)
       setErrors({})
+      setTextError(null)
     } else {
       const exampleData = {
         gene_a_symbol: 'BCR',
@@ -232,12 +216,12 @@ TMPRSS2,chr21,41498118,-::ERG,chr21,38380027,-`)
         gene_b_strand: '+',
       }
       setFormData(exampleData)
-      setOneliner('BCR,chr22,23524427,+::ABL1,chr9,133729449,+')
+      setTextInput('BCR,chr22,23524427,+::ABL1,chr9,133729449,+')
       setErrors({})
     }
   }
 
-  const validBatchCount = parseBatchInput(batchInput).length
+  const validFusionCount = parseTextInput(textInput).length
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
@@ -257,25 +241,14 @@ TMPRSS2,chr21,41498118,-::ERG,chr21,38380027,-`)
           </button>
           <button
             type="button"
-            onClick={() => setInputMode('oneliner')}
+            onClick={() => setInputMode('text')}
             className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-              inputMode === 'oneliner'
+              inputMode === 'text'
                 ? 'bg-white dark:bg-gray-600 text-gray-900 dark:text-white shadow-sm'
                 : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
             }`}
           >
-            One-liner
-          </button>
-          <button
-            type="button"
-            onClick={() => setInputMode('batch')}
-            className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-              inputMode === 'batch'
-                ? 'bg-white dark:bg-gray-600 text-gray-900 dark:text-white shadow-sm'
-                : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-            }`}
-          >
-            Batch
+            Text
           </button>
         </div>
         <button
@@ -283,69 +256,45 @@ TMPRSS2,chr21,41498118,-::ERG,chr21,38380027,-`)
           onClick={loadExample}
           className="text-sm text-primary-600 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300"
         >
-          {inputMode === 'batch' ? 'Load examples (3 fusions)' : 'Load example (BCR-ABL1)'}
+          {inputMode === 'text' ? 'Load examples (3 fusions)' : 'Load example (BCR-ABL1)'}
         </button>
       </div>
 
-      {/* Batch Input Mode */}
-      {inputMode === 'batch' && (
+      {/* Text Input Mode (single or multiple fusions) */}
+      {inputMode === 'text' && (
         <div className="space-y-2">
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-            Multiple Fusions (one per line)
+            Fusion(s) - one per line
           </label>
           <textarea
-            value={batchInput}
+            value={textInput}
             onChange={(e) => {
-              setBatchInput(e.target.value)
+              setTextInput(e.target.value)
               setErrors({})
-              setBatchError(null)
+              setTextError(null)
             }}
             placeholder={`BCR,chr22,23524427,+::ABL1,chr9,133729449,+
 EML4,chr2,42522654,+::ALK,chr2,29446394,-
 TMPRSS2,chr21,41498118,-::ERG,chr21,38380027,-`}
-            rows={6}
+            rows={4}
             className={`w-full px-3 py-2 border rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white font-mono text-sm
-              ${errors.batch ? 'border-red-500' : 'border-gray-300 dark:border-gray-600'}
+              ${errors.text ? 'border-red-500' : 'border-gray-300 dark:border-gray-600'}
               focus:outline-none focus:ring-2 focus:ring-primary-500`}
           />
-          {errors.batch && (
-            <p className="text-sm text-red-500">{errors.batch}</p>
+          {errors.text && (
+            <p className="text-sm text-red-500">{errors.text}</p>
           )}
-          {batchError && (
-            <p className="text-sm text-red-500">{batchError}</p>
+          {textError && (
+            <p className="text-sm text-red-500">{textError}</p>
           )}
           <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
             <span>Format: <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">GENE,chr,pos,strand::GENE,chr,pos,strand</code></span>
-            {validBatchCount > 0 && (
+            {validFusionCount > 0 && (
               <span className="text-green-600 dark:text-green-400">
-                {validBatchCount} valid fusion{validBatchCount !== 1 ? 's' : ''} detected
+                {validFusionCount} valid fusion{validFusionCount !== 1 ? 's' : ''} detected
               </span>
             )}
           </div>
-        </div>
-      )}
-
-      {/* One-liner Input Mode */}
-      {inputMode === 'oneliner' && (
-        <div className="space-y-2">
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-            Fusion (one-liner format)
-          </label>
-          <input
-            type="text"
-            value={oneliner}
-            onChange={(e) => handleOnelinerChange(e.target.value)}
-            placeholder="BCR,chr22,23524427,+::ABL1,chr9,133729449,+"
-            className={`w-full px-3 py-2 border rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white font-mono text-sm
-              ${errors.oneliner ? 'border-red-500' : 'border-gray-300 dark:border-gray-600'}
-              focus:outline-none focus:ring-2 focus:ring-primary-500`}
-          />
-          {errors.oneliner && (
-            <p className="text-sm text-red-500">{errors.oneliner}</p>
-          )}
-          <p className="text-xs text-gray-500 dark:text-gray-400">
-            Format: <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">GENE,chr,position,strand::GENE,chr,position,strand</code>
-          </p>
         </div>
       )}
 
@@ -540,8 +489,8 @@ TMPRSS2,chr21,41498118,-::ERG,chr21,38380027,-`}
       </div>
 
       <div className="flex justify-end">
-        <Button type="submit" disabled={isLoading || batchLoading}>
-          {(isLoading || batchLoading) ? (
+        <Button type="submit" disabled={isLoading || textLoading}>
+          {(isLoading || textLoading) ? (
             <>
               <svg className="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
@@ -549,8 +498,8 @@ TMPRSS2,chr21,41498118,-::ERG,chr21,38380027,-`}
               </svg>
               Analyzing...
             </>
-          ) : inputMode === 'batch' ? (
-            `Analyze ${validBatchCount} Fusion${validBatchCount !== 1 ? 's' : ''}`
+          ) : inputMode === 'text' && validFusionCount > 1 ? (
+            `Analyze ${validFusionCount} Fusions`
           ) : (
             'Analyze Fusion'
           )}

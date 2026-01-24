@@ -184,25 +184,34 @@ class FusionBuilder:
 
     async def _get_or_fetch_gene(self, symbol: str) -> Optional[Gene]:
         """Get gene from cache or fetch from Ensembl."""
-        # Check cache
+        genome_build = self.ensembl.genome_build
+
+        # Check cache - must match both symbol AND genome_build
         result = await self.db.execute(
-            select(Gene).where(Gene.symbol == symbol)
+            select(Gene).where(
+                Gene.symbol == symbol,
+                Gene.genome_build == genome_build
+            )
         )
         gene = result.scalar_one_or_none()
 
         # Check if cache is fresh
         if gene and gene.cached_at:
             if datetime.utcnow() - gene.cached_at < timedelta(days=CACHE_EXPIRY_DAYS):
+                logger.info(f"Using cached gene {symbol} for {genome_build}")
                 return gene
 
         # Fetch from Ensembl
+        logger.info(f"Fetching gene {symbol} from Ensembl ({genome_build})")
         gene_data = await self.ensembl.search_gene(symbol)
         if not gene_data:
             return None
 
         # Create or update cache
+        # Use composite ID: gene_id + genome_build to allow same gene in different builds
+        gene_id = f"{gene_data['id']}_{genome_build}"
         if not gene:
-            gene = Gene(id=gene_data["id"])
+            gene = Gene(id=gene_id)
 
         gene.symbol = gene_data.get("display_name", symbol)
         gene.name = gene_data.get("description", "")
@@ -211,6 +220,7 @@ class FusionBuilder:
         gene.end = gene_data.get("end")
         gene.strand = gene_data.get("strand")
         gene.biotype = gene_data.get("biotype")
+        gene.genome_build = genome_build
         gene.cached_at = datetime.utcnow()
 
         self.db.add(gene)
@@ -229,13 +239,17 @@ class FusionBuilder:
         gene_symbol: Optional[str] = None
     ) -> Transcript:
         """Cache a transcript and its related data."""
+        genome_build = self.ensembl.genome_build
+        # Use composite ID: transcript_id + genome_build
+        transcript_id = f"{trans_data['id']}_{genome_build}"
+
         result = await self.db.execute(
-            select(Transcript).where(Transcript.id == trans_data["id"])
+            select(Transcript).where(Transcript.id == transcript_id)
         )
         transcript = result.scalar_one_or_none()
 
         if not transcript:
-            transcript = Transcript(id=trans_data["id"])
+            transcript = Transcript(id=transcript_id)
 
         transcript.gene_id = gene_id
         transcript.is_canonical = 1 if trans_data.get("is_canonical") else 0
@@ -258,10 +272,12 @@ class FusionBuilder:
 
         # Cache exons - first try from trans_data, then fetch explicitly if needed
         exon_list = trans_data.get("Exon", [])
+        logger.info(f"Transcript {transcript.id}: {len(exon_list)} exons from lookup")
 
-        # If no exons in the lookup response, fetch them explicitly
+        # If no exons in the lookup response, fetch them explicitly via overlap endpoint
         if not exon_list:
             exon_list = await self.ensembl.get_exons(transcript.id)
+            logger.info(f"Transcript {transcript.id}: {len(exon_list)} exons from overlap endpoint")
 
         # If we have exons from lookup but they might be incomplete,
         # also fetch explicitly to get full data
@@ -269,9 +285,35 @@ class FusionBuilder:
             fetched_exons = await self.ensembl.get_exons(transcript.id)
             if len(fetched_exons) > len(exon_list):
                 exon_list = fetched_exons
+                logger.info(f"Transcript {transcript.id}: using {len(exon_list)} exons from overlap (more complete)")
+
+        # If still no exons, try fetching transcript details directly
+        if not exon_list:
+            logger.warning(f"No exons found for {transcript.id}, fetching transcript details")
+            trans_detail = await self.ensembl.get_transcript(transcript.id)
+            if trans_detail:
+                exon_list = trans_detail.get("Exon", [])
+                logger.info(f"Transcript {transcript.id}: {len(exon_list)} exons from transcript lookup")
 
         # Filter to only exons belonging to this transcript (overlap endpoint returns all overlapping features)
-        exon_list = [e for e in exon_list if e.get("Parent") == transcript.id or "Parent" not in e]
+        # Note: Parent field may include version (e.g., ENST00000305877.12) while transcript_id may not
+        def matches_transcript(exon):
+            parent = exon.get("Parent")
+            if not parent:
+                return True  # No Parent field, include it
+            # Check if parent matches transcript_id (with or without version)
+            if parent == transcript.id:
+                return True
+            if parent.startswith(transcript.id + "."):
+                return True
+            # Also check the base ID (strip version from both)
+            base_parent = parent.split(".")[0]
+            base_transcript = transcript.id.split(".")[0]
+            return base_parent == base_transcript
+
+        filtered_exons = [e for e in exon_list if matches_transcript(e)]
+        logger.info(f"Transcript {transcript.id}: {len(filtered_exons)} exons after filtering (from {len(exon_list)})")
+        exon_list = filtered_exons
 
         # Sort exons by position and assign ranks if not present
         # For positive strand: sort by start ascending
@@ -290,20 +332,27 @@ class FusionBuilder:
         return transcript
 
     async def _cache_exon(self, transcript_id: str, exon_data: Dict, rank: int = 0) -> Exon:
-        """Cache an exon."""
+        """Cache an exon.
+
+        Uses composite key (exon_id, transcript_id) since the same exon
+        can belong to multiple transcripts in Ensembl.
+        """
         exon_id = exon_data.get("id")
         if not exon_id:
             return None
 
+        # Check for existing exon with this composite key
         result = await self.db.execute(
-            select(Exon).where(Exon.id == exon_id)
+            select(Exon).where(
+                Exon.exon_id == exon_id,
+                Exon.transcript_id == transcript_id
+            )
         )
         exon = result.scalar_one_or_none()
 
         if not exon:
-            exon = Exon(id=exon_id)
+            exon = Exon(exon_id=exon_id, transcript_id=transcript_id)
 
-        exon.transcript_id = transcript_id
         # Use provided rank, or from data, or default to 0
         exon.rank = exon_data.get("rank") or rank or 0
         exon.start = exon_data.get("start")
@@ -429,9 +478,18 @@ class FusionBuilder:
         transcript_id: Optional[str] = None
     ) -> Optional[Transcript]:
         """Get specific or canonical transcript."""
+        genome_build = self.ensembl.genome_build
+
         if transcript_id:
+            # If user provided a transcript_id, convert to composite format
+            # Handle both formats: "ENST00000305877" and "ENST00000305877_hg38"
+            if "_hg" not in transcript_id:
+                composite_id = f"{transcript_id}_{genome_build}"
+            else:
+                composite_id = transcript_id
+
             result = await self.db.execute(
-                select(Transcript).where(Transcript.id == transcript_id)
+                select(Transcript).where(Transcript.id == composite_id)
             )
             return result.scalar_one_or_none()
 

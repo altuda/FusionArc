@@ -7,7 +7,7 @@ import ManualInput from '../components/fusion/ManualInput'
 import FusionTable from '../components/fusion/FusionTable'
 import BatchInputModal from '../components/fusion/BatchInputModal'
 import { useFusions, useCreateManualFusion, useUploadFusion } from '../hooks/useFusions'
-import { FusionManualInput, createBatchFusions } from '../api/client'
+import { FusionManualInput, createBatchFusions, createBatchFromFusions } from '../api/client'
 
 type InputMode = 'manual' | 'file'
 
@@ -16,6 +16,10 @@ export default function Dashboard() {
   const navigate = useNavigate()
   const [inputMode, setInputMode] = useState<InputMode>('manual')
   const [showBatchModal, setShowBatchModal] = useState(false)
+  const [showCreateBatchModal, setShowCreateBatchModal] = useState(false)
+  const [batchName, setBatchName] = useState('')
+  const [isCreatingBatch, setIsCreatingBatch] = useState(false)
+  const [selectedFusionIds, setSelectedFusionIds] = useState<Set<string>>(new Set())
   const [currentSessionId, setCurrentSessionId] = useState<string | undefined>(sessionId)
 
   const { data: fusionsData, isLoading: isLoadingFusions } = useFusions(currentSessionId)
@@ -27,6 +31,11 @@ export default function Dashboard() {
       setCurrentSessionId(sessionId)
     }
   }, [sessionId])
+
+  // Clear selection when session changes
+  useEffect(() => {
+    setSelectedFusionIds(new Set())
+  }, [currentSessionId])
 
   const handleManualSubmit = async (data: FusionManualInput) => {
     try {
@@ -56,6 +65,25 @@ export default function Dashboard() {
       navigate(`/session/${session.id}`)
     } catch (error) {
       console.error('Failed to create batch fusions:', error)
+    }
+  }
+
+  const handleCreateBatchFromSelected = async () => {
+    if (selectedFusionIds.size < 2) return
+    setIsCreatingBatch(true)
+    try {
+      const session = await createBatchFromFusions(
+        Array.from(selectedFusionIds),
+        batchName || undefined
+      )
+      setShowCreateBatchModal(false)
+      setBatchName('')
+      setSelectedFusionIds(new Set())
+      navigate(`/session/${session.id}`)
+    } catch (error) {
+      console.error('Failed to create batch:', error)
+    } finally {
+      setIsCreatingBatch(false)
     }
   }
 
@@ -122,14 +150,29 @@ export default function Dashboard() {
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
-                Fusion Results
-                {fusionsData && (
-                  <span className="ml-2 text-sm font-normal text-gray-500 dark:text-gray-400">
-                    ({fusionsData.total} fusions)
+              <div className="flex items-center space-x-4">
+                <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+                  Fusion Results
+                  {fusionsData && (
+                    <span className="ml-2 text-sm font-normal text-gray-500 dark:text-gray-400">
+                      ({fusionsData.total} fusions)
+                    </span>
+                  )}
+                </h2>
+                {selectedFusionIds.size > 0 && (
+                  <span className="text-sm text-primary-600 dark:text-primary-400">
+                    {selectedFusionIds.size} selected
                   </span>
                 )}
-              </h2>
+                {selectedFusionIds.size >= 2 && (
+                  <Button
+                    size="sm"
+                    onClick={() => setShowCreateBatchModal(true)}
+                  >
+                    Create Batch
+                  </Button>
+                )}
+              </div>
 
               {/* Legend */}
               <div className="flex items-center space-x-4 text-xs text-gray-500 dark:text-gray-400">
@@ -161,7 +204,13 @@ export default function Dashboard() {
                 </svg>
               </div>
             ) : fusionsData && fusionsData.fusions.length > 0 ? (
-              <FusionTable fusions={fusionsData.fusions} sessionId={currentSessionId} />
+              <FusionTable
+                fusions={fusionsData.fusions}
+                sessionId={currentSessionId}
+                selectable={true}
+                selectedIds={selectedFusionIds}
+                onSelectionChange={setSelectedFusionIds}
+              />
             ) : (
               <div className="text-center py-12 text-gray-500 dark:text-gray-400">
                 No fusions found. Enter a fusion above to get started.
@@ -206,6 +255,62 @@ export default function Dashboard() {
         onClose={() => setShowBatchModal(false)}
         onSubmit={handleBatchSubmit}
       />
+
+      {/* Create Batch from Selected Modal */}
+      {showCreateBatchModal && (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+          <div className="flex min-h-full items-center justify-center p-4">
+            <div
+              className="fixed inset-0 bg-black/50 transition-opacity"
+              onClick={() => setShowCreateBatchModal(false)}
+            />
+            <div className="relative bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-md w-full p-6">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+                Create Batch
+              </h3>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+                Create a new batch with {selectedFusionIds.size} selected fusions.
+                The original fusions will remain in their current sessions.
+              </p>
+              <div className="mb-4">
+                <label
+                  htmlFor="batch-name"
+                  className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                >
+                  Batch Name (optional)
+                </label>
+                <input
+                  type="text"
+                  id="batch-name"
+                  value={batchName}
+                  onChange={(e) => setBatchName(e.target.value)}
+                  placeholder={`Batch (${selectedFusionIds.size} fusions)`}
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg
+                    bg-white dark:bg-gray-700 text-gray-900 dark:text-white
+                    focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                />
+              </div>
+              <div className="flex justify-end space-x-3">
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    setShowCreateBatchModal(false)
+                    setBatchName('')
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleCreateBatchFromSelected}
+                  disabled={isCreatingBatch}
+                >
+                  {isCreatingBatch ? 'Creating...' : 'Create Batch'}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -98,6 +98,7 @@ class FusionResponse(BaseModel):
     has_kinase_domain: int = 0
     kinase_retained: int = -1
     confidence: Optional[str] = None
+    genome_build: str = "hg38"
     created_at: datetime
 
     class Config:

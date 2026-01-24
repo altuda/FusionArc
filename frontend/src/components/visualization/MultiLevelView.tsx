@@ -7,9 +7,10 @@ import { DomainColorMap } from '../../utils/domainColors'
 interface MultiLevelViewProps {
   data: VisualizationData
   domainColorMap?: DomainColorMap  // Optional shared color map for consistency
+  onSvgReady?: (svg: string) => void
 }
 
-export default function MultiLevelView({ data, domainColorMap }: MultiLevelViewProps) {
+export default function MultiLevelView({ data, domainColorMap, onSvgReady }: MultiLevelViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
   const { theme } = useTheme()
@@ -317,7 +318,14 @@ export default function MultiLevelView({ data, domainColorMap }: MultiLevelViewP
         .attr('fill', 'none')
     }
 
-  }, [data, theme, activeGene, localColorMap])
+    // Notify parent of SVG content
+    if (onSvgReady && svgRef.current) {
+      const svgClone = svgRef.current.cloneNode(true) as SVGSVGElement
+      const serializer = new XMLSerializer()
+      onSvgReady(serializer.serializeToString(svgClone))
+    }
+
+  }, [data, theme, activeGene, localColorMap, onSvgReady])
 
   useEffect(() => {
     renderVisualization()
@@ -330,35 +338,31 @@ export default function MultiLevelView({ data, domainColorMap }: MultiLevelViewP
   }, [renderVisualization])
 
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-lg p-4">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
-          Multi-Level View
-        </h3>
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-gray-500 dark:text-gray-400">Gene:</span>
-          <div className="flex rounded-lg overflow-hidden border border-gray-300 dark:border-gray-600">
-            <button
-              onClick={() => setActiveGene('A')}
-              className={`px-3 py-1 text-sm font-medium transition-colors ${
-                activeGene === 'A'
-                  ? 'bg-blue-500 text-white'
-                  : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600'
-              }`}
-            >
-              {data.gene_a.symbol}
-            </button>
-            <button
-              onClick={() => setActiveGene('B')}
-              className={`px-3 py-1 text-sm font-medium transition-colors ${
-                activeGene === 'B'
-                  ? 'bg-green-500 text-white'
-                  : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600'
-              }`}
-            >
-              {data.gene_b.symbol}
-            </button>
-          </div>
+    <div className="relative">
+      {/* Gene selector */}
+      <div className="flex items-center justify-end mb-4 gap-2">
+        <span className="text-sm text-gray-500 dark:text-gray-400">Gene:</span>
+        <div className="flex rounded-lg overflow-hidden border border-gray-300 dark:border-gray-600">
+          <button
+            onClick={() => setActiveGene('A')}
+            className={`px-3 py-1 text-sm font-medium transition-colors ${
+              activeGene === 'A'
+                ? 'bg-blue-500 text-white'
+                : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600'
+            }`}
+          >
+            {data.gene_a.symbol}
+          </button>
+          <button
+            onClick={() => setActiveGene('B')}
+            className={`px-3 py-1 text-sm font-medium transition-colors ${
+              activeGene === 'B'
+                ? 'bg-green-500 text-white'
+                : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600'
+            }`}
+          >
+            {data.gene_b.symbol}
+          </button>
         </div>
       </div>
 

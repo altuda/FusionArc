@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Body
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, delete
+from sqlalchemy import select, func, delete, or_
 from typing import List, Optional, Set
+from pydantic import BaseModel
 from app.database import get_db
 from app.models import Session, Fusion, Protein, Domain
 from app.schemas.fusion import (
@@ -20,12 +21,20 @@ from app.schemas.fusion import (
     MutationInfo,
     MutationResponse
 )
+
+
+class BatchCreateRequest(BaseModel):
+    fusion_ids: List[str]
+    batch_name: Optional[str] = None
 from app.models import Transcript, Gene, Exon
 from app.core.parsers import StarFusionParser, ArribaParser, ManualInputParser
 from app.core.fusion_builder import FusionBuilder, normalize_source_name
 from app.external.ensembl import get_ensembl_client
 from app.external.interpro import get_interpro_client
 from app.external.cbioportal import get_cbioportal_client
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -83,8 +92,9 @@ async def upload_fusion_file(
         try:
             await builder.build_fusion(fusion_data, session.id)
         except Exception as e:
-            # Log error but continue with other fusions
-            print(f"Error building fusion: {e}")
+            import traceback
+            logger.error(f"Error building fusion: {e}")
+            logger.error(traceback.format_exc())
 
     # Get fusion count
     result = await db.execute(
@@ -149,15 +159,26 @@ async def create_batch_fusions(
     await db.commit()
     await db.refresh(session)
 
-    # Build fusions
-    ensembl = get_ensembl_client()
-    builder = FusionBuilder(db, ensembl)
+    # Build fusions - use per-fusion genome build
+    # Cache ensembl clients by genome build to avoid recreating
+    ensembl_clients = {}
 
     for fusion_data in fusion_data_list:
         try:
+            # Get the genome build for this fusion (default to hg38)
+            genome_build = getattr(fusion_data, 'genome_build', None) or "hg38"
+
+            # Get or create ensembl client for this genome build
+            if genome_build not in ensembl_clients:
+                ensembl_clients[genome_build] = get_ensembl_client(genome_build)
+
+            ensembl = ensembl_clients[genome_build]
+            builder = FusionBuilder(db, ensembl)
             await builder.build_fusion(fusion_data, session.id)
         except Exception as e:
-            print(f"Error building fusion: {e}")
+            import traceback
+            logger.error(f"Error building fusion: {e}")
+            logger.error(traceback.format_exc())
 
     result = await db.execute(
         select(func.count(Fusion.id)).where(Fusion.session_id == session.id)
@@ -171,6 +192,192 @@ async def create_batch_fusions(
         created_at=session.created_at,
         fusion_count=fusion_count
     )
+
+
+@router.post("/batch/create", response_model=SessionResponse)
+async def create_batch_from_fusions(
+    request: BatchCreateRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Create a new batch/session by copying selected fusions.
+
+    This allows organizing the same fusion into multiple comparison groups.
+    The original fusions remain in their original sessions.
+    """
+    if not request.fusion_ids:
+        raise HTTPException(400, "No fusion IDs provided")
+
+    if len(request.fusion_ids) < 2:
+        raise HTTPException(400, "At least 2 fusions are required to create a batch")
+
+    # Fetch the selected fusions from any session
+    result = await db.execute(
+        select(Fusion).where(Fusion.id.in_(request.fusion_ids))
+    )
+    source_fusions = result.scalars().all()
+
+    if not source_fusions:
+        raise HTTPException(404, "No fusions found with the provided IDs")
+
+    if len(source_fusions) != len(request.fusion_ids):
+        raise HTTPException(404, f"Some fusion IDs were not found. Found {len(source_fusions)} of {len(request.fusion_ids)}")
+
+    # Create new session for the batch
+    batch_name = request.batch_name or f"Batch ({len(source_fusions)} fusions)"
+    session = Session(
+        name=batch_name,
+        source="batch"
+    )
+    db.add(session)
+    await db.commit()
+    await db.refresh(session)
+
+    # Copy fusions to the new session
+    for source_fusion in source_fusions:
+        new_fusion = Fusion(
+            session_id=session.id,
+            gene_a_symbol=source_fusion.gene_a_symbol,
+            gene_a_id=source_fusion.gene_a_id,
+            gene_a_chromosome=source_fusion.gene_a_chromosome,
+            gene_a_breakpoint=source_fusion.gene_a_breakpoint,
+            gene_a_strand=source_fusion.gene_a_strand,
+            transcript_a_id=source_fusion.transcript_a_id,
+            gene_b_symbol=source_fusion.gene_b_symbol,
+            gene_b_id=source_fusion.gene_b_id,
+            gene_b_chromosome=source_fusion.gene_b_chromosome,
+            gene_b_breakpoint=source_fusion.gene_b_breakpoint,
+            gene_b_strand=source_fusion.gene_b_strand,
+            transcript_b_id=source_fusion.transcript_b_id,
+            junction_reads=source_fusion.junction_reads,
+            spanning_reads=source_fusion.spanning_reads,
+            is_in_frame=source_fusion.is_in_frame,
+            aa_breakpoint_a=source_fusion.aa_breakpoint_a,
+            aa_breakpoint_b=source_fusion.aa_breakpoint_b,
+            fusion_sequence=source_fusion.fusion_sequence,
+            domains_a=source_fusion.domains_a,
+            domains_b=source_fusion.domains_b,
+            has_kinase_domain=source_fusion.has_kinase_domain,
+            kinase_retained=source_fusion.kinase_retained,
+            confidence=source_fusion.confidence,
+            genome_build=source_fusion.genome_build,
+            raw_data=source_fusion.raw_data
+        )
+        db.add(new_fusion)
+
+    await db.commit()
+
+    return SessionResponse(
+        id=session.id,
+        name=session.name,
+        source=session.source,
+        created_at=session.created_at,
+        fusion_count=len(source_fusions)
+    )
+
+
+# ============ DEBUG ROUTES (must be before /{session_id} to not be captured) ============
+
+@router.post("/debug/clear-all-cache")
+async def clear_all_cache(db: AsyncSession = Depends(get_db)):
+    """Clear ALL cached gene/transcript/exon/protein/domain data.
+
+    Use this after schema changes to force complete re-fetch.
+    """
+    from app.models import Protein, Domain
+
+    # Delete in reverse order of dependencies
+    result1 = await db.execute(delete(Domain))
+    result2 = await db.execute(delete(Exon))
+    result3 = await db.execute(delete(Protein))
+    result4 = await db.execute(delete(Transcript))
+    result5 = await db.execute(delete(Gene))
+
+    await db.commit()
+
+    return {
+        "message": "Cleared all cached data",
+        "deleted": {
+            "domains": result1.rowcount,
+            "exons": result2.rowcount,
+            "proteins": result3.rowcount,
+            "transcripts": result4.rowcount,
+            "genes": result5.rowcount
+        }
+    }
+
+
+@router.post("/debug/clear-gene-cache/{gene_symbol}")
+async def clear_gene_cache(
+    gene_symbol: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Clear cached gene/transcript/exon data to force re-fetch."""
+    result = await db.execute(select(Gene).where(Gene.symbol == gene_symbol))
+    gene = result.scalar_one_or_none()
+
+    if not gene:
+        return {"message": f"Gene {gene_symbol} not found in cache"}
+
+    result = await db.execute(select(Transcript).where(Transcript.gene_id == gene.id))
+    transcripts = result.scalars().all()
+
+    deleted_exons = 0
+    for transcript in transcripts:
+        result = await db.execute(delete(Exon).where(Exon.transcript_id == transcript.id))
+        deleted_exons += result.rowcount
+
+    gene.cached_at = None
+    await db.commit()
+
+    return {
+        "message": f"Cleared cache for {gene_symbol}",
+        "transcripts": len(transcripts),
+        "deleted_exons": deleted_exons
+    }
+
+
+@router.get("/debug/exons/{transcript_id}")
+async def debug_exons(
+    transcript_id: str,
+    genome_build: str = "hg38",
+    db: AsyncSession = Depends(get_db)
+):
+    """Debug endpoint to test exon fetching."""
+    result = await db.execute(
+        select(Exon).where(Exon.transcript_id == transcript_id)
+    )
+    db_exons = list(result.scalars().all())
+
+    ensembl = get_ensembl_client(genome_build)
+    trans_data = await ensembl.get_transcript(transcript_id)
+    lookup_exons = trans_data.get("Exon", []) if trans_data else []
+    overlap_exons = await ensembl.get_exons(transcript_id)
+
+    def matches(exon):
+        parent = exon.get("Parent")
+        if not parent:
+            return True
+        if parent == transcript_id or parent.startswith(transcript_id + "."):
+            return True
+        base_parent = parent.split(".")[0]
+        base_transcript = transcript_id.split(".")[0]
+        return base_parent == base_transcript
+
+    filtered_overlap = [e for e in overlap_exons if matches(e)]
+
+    return {
+        "transcript_id": transcript_id,
+        "genome_build": genome_build,
+        "db_exons_count": len(db_exons),
+        "db_exons": [{"id": e.exon_id, "start": e.start, "end": e.end, "rank": e.rank} for e in db_exons[:5]],
+        "lookup_exons_count": len(lookup_exons),
+        "lookup_exons": [{"id": e.get("id"), "start": e.get("start"), "end": e.get("end")} for e in lookup_exons[:3]],
+        "overlap_exons_total": len(overlap_exons),
+        "overlap_exons_filtered": len(filtered_overlap),
+        "filtered_sample": [{"id": e.get("id"), "start": e.get("start"), "rank": e.get("rank"), "Parent": e.get("Parent")} for e in filtered_overlap[:3]],
+    }
+
+# ============ END DEBUG ROUTES ============
 
 
 @router.get("/{session_id}", response_model=FusionListResponse)
@@ -265,20 +472,80 @@ async def get_visualization_data(
     if not fusion:
         raise HTTPException(404, "Fusion not found")
 
+    logger.info(f"Visualization for {fusion.gene_a_symbol}--{fusion.gene_b_symbol}, genome_build={fusion.genome_build}")
+    logger.info(f"  Transcript A: {fusion.transcript_a_id}, Transcript B: {fusion.transcript_b_id}")
+
     # Calculate protein lengths and junction position
     domains_a = [DomainInfo(**d) for d in (fusion.domains_a or [])]
     domains_b = [DomainInfo(**d) for d in (fusion.domains_b or [])]
 
-    # Estimate protein lengths from domains if not available
-    protein_length_a = fusion.aa_breakpoint_a or (max(d.end for d in domains_a) if domains_a else 100)
-    protein_length_b = (max(d.end for d in domains_b) if domains_b else 100) - (fusion.aa_breakpoint_b or 0)
+    # Fetch actual protein lengths from database
+    # This is important because domain data may be sparse/missing (especially for hg38)
+    # but the actual protein length is stored when the transcript was fetched
+    actual_protein_length_a = None
+    actual_protein_length_b = None
+
+    # Helper to get base transcript ID (strip genome build suffix)
+    def get_base_transcript_id(tid: str) -> str:
+        if tid and "_hg" in tid:
+            return tid.rsplit("_", 1)[0]
+        return tid
+
+    if fusion.transcript_a_id:
+        # Try exact match first, then base transcript ID match
+        result = await db.execute(
+            select(Protein.length).where(Protein.transcript_id == fusion.transcript_a_id)
+        )
+        actual_protein_length_a = result.scalar_one_or_none()
+
+        # If not found, try matching by base transcript ID (without genome build suffix)
+        if actual_protein_length_a is None:
+            base_id = get_base_transcript_id(fusion.transcript_a_id)
+            result = await db.execute(
+                select(Protein.length).where(Protein.transcript_id.like(f"{base_id}%"))
+            )
+            actual_protein_length_a = result.scalar_one_or_none()
+
+    if fusion.transcript_b_id:
+        # Try exact match first, then base transcript ID match
+        result = await db.execute(
+            select(Protein.length).where(Protein.transcript_id == fusion.transcript_b_id)
+        )
+        actual_protein_length_b = result.scalar_one_or_none()
+
+        # If not found, try matching by base transcript ID (without genome build suffix)
+        if actual_protein_length_b is None:
+            base_id = get_base_transcript_id(fusion.transcript_b_id)
+            result = await db.execute(
+                select(Protein.length).where(Protein.transcript_id.like(f"{base_id}%"))
+            )
+            actual_protein_length_b = result.scalar_one_or_none()
+
+    # Use actual length first, fall back to domain-based estimate
+    max_domain_end_a = max(d.end for d in domains_a) if domains_a else 0
+    max_domain_end_b = max(d.end for d in domains_b) if domains_b else 0
+
+    protein_length_a = max(
+        actual_protein_length_a or 0,
+        max_domain_end_a,
+        fusion.aa_breakpoint_a or 0
+    ) or 100  # Final fallback
+
+    protein_length_b = max(
+        actual_protein_length_b or 0,
+        max_domain_end_b,
+        fusion.aa_breakpoint_b or 0
+    ) or 100  # Final fallback
 
     junction_position = fusion.aa_breakpoint_a or protein_length_a
-    total_length = junction_position + protein_length_b
+    # Total fusion protein length = retained portion of gene A + retained portion of gene B
+    retained_b = protein_length_b - (fusion.aa_breakpoint_b or 0)
+    total_length = junction_position + retained_b
 
     # Fetch exon data for both transcripts
-    exons_a, gene_a_data, bp_exon_a, bp_loc_a = await _get_transcript_exons(db, fusion.transcript_a_id, fusion.gene_a_breakpoint, fusion.gene_a_strand, is_5prime=True)
-    exons_b, gene_b_data, bp_exon_b, bp_loc_b = await _get_transcript_exons(db, fusion.transcript_b_id, fusion.gene_b_breakpoint, fusion.gene_b_strand, is_5prime=False)
+    genome_build = fusion.genome_build or "hg38"
+    exons_a, gene_a_data, bp_exon_a, bp_loc_a = await _get_transcript_exons(db, fusion.transcript_a_id, fusion.gene_a_breakpoint, fusion.gene_a_strand, is_5prime=True, genome_build=genome_build)
+    exons_b, gene_b_data, bp_exon_b, bp_loc_b = await _get_transcript_exons(db, fusion.transcript_b_id, fusion.gene_b_breakpoint, fusion.gene_b_strand, is_5prime=False, genome_build=genome_build)
 
     # Build fusion transcript data
     fusion_transcript = _build_fusion_transcript(
@@ -339,7 +606,8 @@ async def _get_transcript_exons(
     transcript_id: Optional[str],
     breakpoint: Optional[int],
     strand: Optional[str],
-    is_5prime: bool
+    is_5prime: bool,
+    genome_build: str = "hg38"
 ) -> tuple[List[ExonInfo], Optional[dict], Optional[int], Optional[str]]:
     """Fetch exon data for a transcript.
 
@@ -349,6 +617,9 @@ async def _get_transcript_exons(
         - Breakpoint exon number (or preceding exon for intronic breakpoints)
         - Breakpoint location string (e.g., "exon 31" or "intron 6")
     """
+    import logging
+    logger = logging.getLogger(__name__)
+
     if not transcript_id:
         return [], None, None, None
 
@@ -361,13 +632,88 @@ async def _get_transcript_exons(
     if not transcript:
         return [], None, None, None
 
-    # Get exons
+    # Get exons from database
     result = await db.execute(
         select(Exon)
         .where(Exon.transcript_id == transcript_id)
         .order_by(Exon.rank, Exon.start)
     )
     exons = list(result.scalars().all())
+
+    # If no exons in database, fetch from Ensembl API on-demand
+    if not exons:
+        logger.warning(f"No exons in database for {transcript_id}, fetching from Ensembl")
+        ensembl = get_ensembl_client(genome_build)
+
+        # Strip genome build suffix from composite ID if present (e.g., "ENST00000305877_hg38" -> "ENST00000305877")
+        ensembl_transcript_id = transcript_id.rsplit("_", 1)[0] if "_hg" in transcript_id else transcript_id
+        logger.info(f"Using Ensembl transcript ID: {ensembl_transcript_id}")
+
+        # First try the transcript lookup endpoint
+        trans_data = await ensembl.get_transcript(ensembl_transcript_id)
+        exon_data_list = trans_data.get("Exon", []) if trans_data else []
+
+        # If still no exons, try the overlap endpoint
+        if not exon_data_list:
+            exon_data_list = await ensembl.get_exons(ensembl_transcript_id)
+            # Filter to only exons belonging to this transcript
+            def matches_transcript(exon):
+                parent = exon.get("Parent")
+                if not parent:
+                    return True
+                if parent == ensembl_transcript_id or parent.startswith(ensembl_transcript_id + "."):
+                    return True
+                base_parent = parent.split(".")[0]
+                base_transcript = ensembl_transcript_id.split(".")[0]
+                return base_parent == base_transcript
+            exon_data_list = [e for e in exon_data_list if matches_transcript(e)]
+
+        logger.info(f"Fetched {len(exon_data_list)} exons for {transcript_id} from Ensembl")
+
+        # Convert to ExonInfo-like objects for processing
+        # Sort by position based on strand
+        if strand == "-":
+            exon_data_list = sorted(exon_data_list, key=lambda e: e.get("start", 0), reverse=True)
+        else:
+            exon_data_list = sorted(exon_data_list, key=lambda e: e.get("start", 0))
+
+        # Create temporary exon objects for processing
+        class TempExon:
+            def __init__(self, data, rank):
+                self.start = data.get("start")
+                self.end = data.get("end")
+                self.rank = data.get("rank") or rank
+
+        exons = [TempExon(e, idx + 1) for idx, e in enumerate(exon_data_list)]
+
+        # Try to cache them in database for future use (best effort)
+        try:
+            for idx, exon_data in enumerate(exon_data_list):
+                exon_id = exon_data.get("id")
+                if exon_id:
+                    # Check if already exists
+                    existing = await db.execute(
+                        select(Exon).where(
+                            Exon.exon_id == exon_id,
+                            Exon.transcript_id == transcript_id
+                        )
+                    )
+                    if not existing.scalar_one_or_none():
+                        new_exon = Exon(
+                            exon_id=exon_id,
+                            transcript_id=transcript_id,
+                            rank=exon_data.get("rank") or (idx + 1),
+                            start=exon_data.get("start"),
+                            end=exon_data.get("end"),
+                            phase=exon_data.get("phase"),
+                            end_phase=exon_data.get("end_phase")
+                        )
+                        db.add(new_exon)
+            await db.commit()
+            logger.info(f"Cached exons for {transcript_id}")
+        except Exception as e:
+            logger.warning(f"Failed to cache exons for {transcript_id}: {e}")
+            await db.rollback()
 
     # If all exons have rank=0, we need to sort by position based on strand
     # Positive strand: low to high genomic coords
@@ -457,6 +803,10 @@ async def _get_transcript_exons(
             is_coding=is_coding,
             status=status
         ))
+
+    logger.info(f"Built {len(exon_infos)} ExonInfo objects for {transcript_id}")
+    if exon_infos:
+        logger.info(f"  First exon: rank={exon_infos[0].rank}, start={exon_infos[0].start}, end={exon_infos[0].end}")
 
     # Calculate breakpoint exon and location
     # The breakpoint location indicates where the genomic breakpoint falls:

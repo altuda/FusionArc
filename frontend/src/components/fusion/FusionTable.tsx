@@ -5,12 +5,21 @@ import { FusionResponse } from '../../api/client'
 interface FusionTableProps {
   fusions: FusionResponse[]
   sessionId: string
+  selectedIds?: Set<string>
+  onSelectionChange?: (selectedIds: Set<string>) => void
+  selectable?: boolean
 }
 
 type SortField = 'name' | 'reads' | 'confidence' | 'frame'
 type SortDir = 'asc' | 'desc'
 
-export default function FusionTable({ fusions, sessionId }: FusionTableProps) {
+export default function FusionTable({
+  fusions,
+  sessionId,
+  selectedIds = new Set(),
+  onSelectionChange,
+  selectable = false
+}: FusionTableProps) {
   const [sortField, setSortField] = useState<SortField>('reads')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
 
@@ -76,11 +85,62 @@ export default function FusionTable({ fusions, sessionId }: FusionTableProps) {
     return 'gray'
   }
 
+  const handleSelectAll = () => {
+    if (!onSelectionChange) return
+    if (selectedIds.size === fusions.length) {
+      onSelectionChange(new Set())
+    } else {
+      onSelectionChange(new Set(fusions.map(f => f.id)))
+    }
+  }
+
+  const handleSelectFusion = (fusionId: string) => {
+    if (!onSelectionChange) return
+    const newSelected = new Set(selectedIds)
+    if (newSelected.has(fusionId)) {
+      newSelected.delete(fusionId)
+    } else {
+      newSelected.add(fusionId)
+    }
+    onSelectionChange(newSelected)
+  }
+
+  const GenomeBuildBadge = ({ build }: { build?: string }) => {
+    const isHg19 = build === 'hg19'
+    return (
+      <span
+        className={`ml-2 px-1.5 py-0.5 text-xs font-medium rounded ${
+          isHg19
+            ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400'
+            : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+        }`}
+      >
+        {build || 'hg38'}
+      </span>
+    )
+  }
+
+  const isAllSelected = fusions.length > 0 && selectedIds.size === fusions.length
+  const isSomeSelected = selectedIds.size > 0 && selectedIds.size < fusions.length
+
   return (
     <div className="overflow-x-auto">
       <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
         <thead className="bg-gray-50 dark:bg-gray-800">
           <tr>
+            {selectable && (
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                <input
+                  type="checkbox"
+                  checked={isAllSelected}
+                  ref={(el) => {
+                    if (el) el.indeterminate = isSomeSelected
+                  }}
+                  onChange={handleSelectAll}
+                  className="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
+                />
+              </th>
+            )}
             <th
               className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700"
               onClick={() => handleSort('name')}
@@ -118,7 +178,22 @@ export default function FusionTable({ fusions, sessionId }: FusionTableProps) {
         </thead>
         <tbody className="bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700">
           {sortedFusions.map((fusion) => (
-            <tr key={fusion.id} className="hover:bg-gray-50 dark:hover:bg-gray-800">
+            <tr
+              key={fusion.id}
+              className={`hover:bg-gray-50 dark:hover:bg-gray-800 ${
+                selectedIds.has(fusion.id) ? 'bg-primary-50 dark:bg-primary-900/20' : ''
+              }`}
+            >
+              {selectable && (
+                <td className="px-4 py-4 whitespace-nowrap">
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(fusion.id)}
+                    onChange={() => handleSelectFusion(fusion.id)}
+                    className="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
+                  />
+                </td>
+              )}
               <td className="px-6 py-4 whitespace-nowrap">
                 <span className="font-medium text-gray-900 dark:text-white">
                   {fusion.gene_a_symbol}
@@ -127,6 +202,7 @@ export default function FusionTable({ fusions, sessionId }: FusionTableProps) {
                 <span className="font-medium text-gray-900 dark:text-white">
                   {fusion.gene_b_symbol}
                 </span>
+                <GenomeBuildBadge build={fusion.genome_build} />
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                 <div>

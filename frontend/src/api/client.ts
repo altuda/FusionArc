@@ -108,6 +108,7 @@ export interface FusionResponse {
   has_kinase_domain: number
   kinase_retained: number
   confidence?: string
+  genome_build?: GenomeBuild
   created_at: string
 }
 
@@ -234,5 +235,13 @@ export async function getSessionDomains(sessionId: string): Promise<string[]> {
 
 export async function getFusionMutations(sessionId: string, fusionId: string): Promise<MutationResponse> {
   const response = await apiClient.get<MutationResponse>(`/fusions/${sessionId}/${fusionId}/mutations`)
+  return response.data
+}
+
+export async function createBatchFromFusions(fusionIds: string[], name?: string): Promise<SessionResponse> {
+  const response = await apiClient.post<SessionResponse>('/fusions/batch/create', {
+    fusion_ids: fusionIds,
+    batch_name: name,
+  })
   return response.data
 }
