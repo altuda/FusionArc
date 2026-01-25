@@ -271,3 +271,12 @@ export async function createBatchFromFusions(fusionIds: string[], name?: string)
   })
   return response.data
 }
+
+export async function getBatchSessions(): Promise<SessionResponse[]> {
+  const response = await apiClient.get<SessionResponse[]>('/fusions/sessions/batches')
+  return response.data
+}
+
+export async function deleteSession(sessionId: string): Promise<void> {
+  await apiClient.delete(`/fusions/sessions/${sessionId}`)
+}

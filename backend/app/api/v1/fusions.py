@@ -408,6 +408,67 @@ async def debug_exons(
 # ============ END DEBUG ROUTES ============
 
 
+@router.get("/sessions/batches", response_model=List[SessionResponse])
+async def list_batch_sessions(
+    db: AsyncSession = Depends(get_db)
+):
+    """List all batch sessions with their fusion counts."""
+    result = await db.execute(
+        select(Session)
+        .where(Session.source == "batch")
+        .order_by(Session.created_at.desc())
+    )
+    sessions = result.scalars().all()
+
+    # Get fusion counts for each session
+    responses = []
+    for session in sessions:
+        count_result = await db.execute(
+            select(func.count(Fusion.id)).where(Fusion.session_id == session.id)
+        )
+        fusion_count = count_result.scalar() or 0
+
+        responses.append(SessionResponse(
+            id=session.id,
+            name=session.name,
+            source=session.source,
+            created_at=session.created_at,
+            fusion_count=fusion_count
+        ))
+
+    return responses
+
+
+@router.delete("/sessions/{session_id}")
+async def delete_session(
+    session_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Delete a session and all its fusions."""
+    # Check if session exists
+    result = await db.execute(
+        select(Session).where(Session.id == session_id)
+    )
+    session = result.scalar_one_or_none()
+
+    if not session:
+        raise HTTPException(404, "Session not found")
+
+    # Delete all fusions in the session
+    await db.execute(
+        delete(Fusion).where(Fusion.session_id == session_id)
+    )
+
+    # Delete the session
+    await db.execute(
+        delete(Session).where(Session.id == session_id)
+    )
+
+    await db.commit()
+
+    return {"message": "Session deleted", "session_id": session_id}
+
+
 @router.get("/{session_id}", response_model=FusionListResponse)
 async def list_fusions(
     session_id: str,

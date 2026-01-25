@@ -5,9 +5,8 @@ import Button from '../components/common/Button'
 import FileDropzone from '../components/common/FileDropzone'
 import ManualInput from '../components/fusion/ManualInput'
 import FusionTable from '../components/fusion/FusionTable'
-import BatchInputModal from '../components/fusion/BatchInputModal'
 import { useFusions, useCreateManualFusion, useUploadFusion } from '../hooks/useFusions'
-import { FusionManualInput, createBatchFusions, createBatchFromFusions } from '../api/client'
+import { FusionManualInput, createBatchFromFusions, getBatchSessions, deleteSession, SessionResponse } from '../api/client'
 
 type InputMode = 'manual' | 'file'
 type SessionMode = 'new' | 'add'  // 'new' creates new session, 'add' adds to current
@@ -16,13 +15,19 @@ export default function Dashboard() {
   const { sessionId } = useParams<{ sessionId: string }>()
   const navigate = useNavigate()
   const [inputMode, setInputMode] = useState<InputMode>('manual')
-  const [showBatchModal, setShowBatchModal] = useState(false)
   const [showCreateBatchModal, setShowCreateBatchModal] = useState(false)
   const [batchName, setBatchName] = useState('')
   const [isCreatingBatch, setIsCreatingBatch] = useState(false)
   const [selectedFusionIds, setSelectedFusionIds] = useState<Set<string>>(new Set())
   const [currentSessionId, setCurrentSessionId] = useState<string | undefined>(sessionId)
   const [sessionMode, setSessionMode] = useState<SessionMode>('new')
+
+  // Saved batches state
+  const [savedBatches, setSavedBatches] = useState<SessionResponse[]>([])
+  const [isLoadingBatches, setIsLoadingBatches] = useState(true)
+  const [batchesExpanded, setBatchesExpanded] = useState(true)
+  const [deletingBatchId, setDeletingBatchId] = useState<string | null>(null)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null)
 
   const { data: fusionsData, isLoading: isLoadingFusions } = useFusions(currentSessionId)
   const createManualMutation = useCreateManualFusion()
@@ -38,6 +43,41 @@ export default function Dashboard() {
   useEffect(() => {
     setSelectedFusionIds(new Set())
   }, [currentSessionId])
+
+  // Fetch saved batches
+  const fetchBatches = async () => {
+    try {
+      setIsLoadingBatches(true)
+      const batches = await getBatchSessions()
+      setSavedBatches(batches)
+    } catch (error) {
+      console.error('Failed to fetch batches:', error)
+    } finally {
+      setIsLoadingBatches(false)
+    }
+  }
+
+  useEffect(() => {
+    fetchBatches()
+  }, [])
+
+  const handleDeleteBatch = async (batchId: string) => {
+    setDeletingBatchId(batchId)
+    try {
+      await deleteSession(batchId)
+      setSavedBatches(prev => prev.filter(b => b.id !== batchId))
+      setShowDeleteConfirm(null)
+    } catch (error) {
+      console.error('Failed to delete batch:', error)
+    } finally {
+      setDeletingBatchId(null)
+    }
+  }
+
+  const formatDate = (dateStr: string) => {
+    const date = new Date(dateStr)
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  }
 
   const handleManualSubmit = async (data: FusionManualInput) => {
     try {
@@ -64,18 +104,6 @@ export default function Dashboard() {
     }
   }
 
-  const handleBatchSubmit = async (content: string) => {
-    try {
-      const targetSessionId = sessionMode === 'add' && currentSessionId ? currentSessionId : undefined
-      const session = await createBatchFusions(content, targetSessionId)
-      setCurrentSessionId(session.id)
-      setShowBatchModal(false)
-      navigate(`/session/${session.id}`)
-    } catch (error) {
-      console.error('Failed to create batch fusions:', error)
-    }
-  }
-
   const handleCreateBatchFromSelected = async () => {
     if (selectedFusionIds.size < 2) return
     setIsCreatingBatch(true)
@@ -87,6 +115,8 @@ export default function Dashboard() {
       setShowCreateBatchModal(false)
       setBatchName('')
       setSelectedFusionIds(new Set())
+      // Refresh batches list
+      fetchBatches()
       // Navigate to the batch view page to see all fusions stacked
       navigate(`/session/${session.id}/batch`)
     } catch (error) {
@@ -183,9 +213,6 @@ export default function Dashboard() {
                 File Upload
               </button>
             </div>
-            <Button variant="ghost" size="sm" onClick={() => setShowBatchModal(true)}>
-              Batch Input
-            </Button>
           </div>
         </CardHeader>
         <CardBody>
@@ -202,6 +229,99 @@ export default function Dashboard() {
             />
           )}
         </CardBody>
+      </Card>
+
+      {/* Saved Batches Section */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+              Saved Batches
+              {savedBatches.length > 0 && (
+                <span className="ml-2 text-sm font-normal text-gray-500 dark:text-gray-400">
+                  ({savedBatches.length})
+                </span>
+              )}
+            </h2>
+            <button
+              onClick={() => setBatchesExpanded(!batchesExpanded)}
+              className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
+            >
+              {batchesExpanded ? 'Collapse' : 'Expand'}
+            </button>
+          </div>
+        </CardHeader>
+        {batchesExpanded && (
+          <CardBody className="p-0">
+            {isLoadingBatches ? (
+              <div className="flex items-center justify-center py-8">
+                <svg className="animate-spin h-6 w-6 text-primary-600" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+              </div>
+            ) : savedBatches.length > 0 ? (
+              <div className="divide-y divide-gray-200 dark:divide-gray-700">
+                {savedBatches.map((batch) => (
+                  <div
+                    key={batch.id}
+                    className="flex items-center justify-between px-6 py-3 hover:bg-gray-50 dark:hover:bg-gray-800/50"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-gray-900 dark:text-white truncate">
+                        {batch.name || 'Unnamed batch'}
+                      </p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        {batch.fusion_count} fusion{batch.fusion_count !== 1 ? 's' : ''} &middot; {formatDate(batch.created_at)}
+                      </p>
+                    </div>
+                    <div className="flex items-center space-x-2 ml-4">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => navigate(`/session/${batch.id}/batch`)}
+                      >
+                        View
+                      </Button>
+                      {showDeleteConfirm === batch.id ? (
+                        <div className="flex items-center space-x-1">
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            onClick={() => handleDeleteBatch(batch.id)}
+                            disabled={deletingBatchId === batch.id}
+                          >
+                            {deletingBatchId === batch.id ? '...' : 'Confirm'}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => setShowDeleteConfirm(null)}
+                          >
+                            Cancel
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setShowDeleteConfirm(batch.id)}
+                          className="text-red-600 hover:text-red-700 dark:text-red-400"
+                        >
+                          Delete
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-8 text-gray-500 dark:text-gray-400">
+                No saved batches yet. Create a batch by selecting multiple fusions and clicking "Create Batch".
+              </div>
+            )}
+          </CardBody>
+        )}
       </Card>
 
       {/* Results Section */}
@@ -307,13 +427,6 @@ export default function Dashboard() {
           </CardBody>
         </Card>
       )}
-
-      {/* Batch Input Modal */}
-      <BatchInputModal
-        isOpen={showBatchModal}
-        onClose={() => setShowBatchModal(false)}
-        onSubmit={handleBatchSubmit}
-      />
 
       {/* Create Batch from Selected Modal */}
       {showCreateBatchModal && (
