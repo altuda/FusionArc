@@ -14,7 +14,7 @@ import ExportButtons from '../components/visualization/ExportButtons'
 import FusionTranscriptView from '../components/visualization/FusionTranscriptView'
 import MultiLevelView from '../components/visualization/MultiLevelView'
 import LollipopPlot from '../components/visualization/LollipopPlot'
-import DomainColorLegend, { getLegendItems } from '../components/visualization/DomainColorLegend'
+import DomainColorLegend, { getLegendItems, FeatureTypeLegend, SourceLegend } from '../components/visualization/DomainColorLegend'
 import { useFusionDetail, useVisualizationData, useFusionMutations } from '../hooks/useFusions'
 import { refreshFusionDomains, getSessionDomains, MutationInfo, MutationType } from '../api/client'
 import { DomainColorMap } from '../utils/domainColors'
@@ -412,8 +412,8 @@ export default function FusionDetail() {
               domainColorMap={domainColorMap}
               viewMode={schematicViewMode}
             />
-            {domainFilters.colorMode === 'domain' && (
-              <div className="mt-4">
+            <div className="mt-4">
+              {domainFilters.colorMode === 'domain' && (
                 <DomainColorLegend
                   domains={allDomains}
                   colorMap={domainColorMap}
@@ -421,8 +421,14 @@ export default function FusionDetail() {
                   showLost={schematicViewMode === 'stacked' || schematicViewMode === 'full'}
                   compact
                 />
-              </div>
-            )}
+              )}
+              {domainFilters.colorMode === 'type' && (
+                <FeatureTypeLegend compact domains={allDomains} sourceFilter={domainFilters.sources} />
+              )}
+              {domainFilters.colorMode === 'source' && (
+                <SourceLegend compact sources={availableSources} />
+              )}
+            </div>
           </CardBody>
         </Card>
       )}

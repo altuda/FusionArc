@@ -61,9 +61,10 @@ interface FusionSchematicViewProps {
   domainColorMap?: DomainColorMap
   filters?: DomainFilters
   onSvgReady?: (svg: string) => void
+  showStrandOrientation?: boolean
 }
 
-export default function FusionSchematicView({ data, domainColorMap, filters, onSvgReady }: FusionSchematicViewProps) {
+export default function FusionSchematicView({ data, domainColorMap, filters, onSvgReady, showStrandOrientation = false }: FusionSchematicViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
   const { theme } = useTheme()
@@ -264,8 +265,9 @@ export default function FusionSchematicView({ data, domainColorMap, filters, onS
         g.append('rect').attr('x', 0).attr('y', yCenter - domainHeight / 2 - 2).attr('width', bpX).attr('height', domainHeight + 4).attr('fill', theme === 'dark' ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.08)').attr('pointer-events', 'none')
       }
 
-      // Gene label
-      g.append('text').attr('x', proteinEndX + 15).attr('y', yCenter + 5).attr('fill', geneData.color).attr('font-size', '14px').attr('font-weight', 'bold').text(geneData.symbol)
+      // Gene label with optional strand orientation
+      const strandSuffix = showStrandOrientation && geneData.strand ? ` (${geneData.strand})` : ''
+      g.append('text').attr('x', proteinEndX + 15).attr('y', yCenter + 5).attr('fill', geneData.color).attr('font-size', '14px').attr('font-weight', 'bold').text(geneData.symbol + strandSuffix)
 
       return { breakpointX: bpX }
     }
@@ -310,7 +312,7 @@ export default function FusionSchematicView({ data, domainColorMap, filters, onS
     }
 
   // Note: shouldShowDomain and getDomainColor depend on filters and localColorMap which are in deps
-  }, [data, theme, localColorMap, filters, onSvgReady, containerWidth])
+  }, [data, theme, localColorMap, filters, onSvgReady, containerWidth, showStrandOrientation])
 
   return (
     <div className="mt-4">

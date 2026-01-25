@@ -257,7 +257,7 @@ export default function ProteinSchematic({ data, filters = defaultFilters, showS
 
   // Render stacked view
   if (viewMode === 'stacked') {
-    return <FusionSchematicView data={data} domainColorMap={localColorMap} filters={filters} onSvgReady={onSvgReady} />
+    return <FusionSchematicView data={data} domainColorMap={localColorMap} filters={filters} onSvgReady={onSvgReady} showStrandOrientation={showStrandOrientation} />
   }
 
   return (

@@ -9,7 +9,8 @@ import DatabaseFilter from '../components/common/DatabaseFilter'
 import ProteinSchematic, { DomainFilters, ColorMode, ViewMode } from '../components/visualization/ProteinSchematic'
 import FusionTranscriptView from '../components/visualization/FusionTranscriptView'
 import MultiLevelView from '../components/visualization/MultiLevelView'
-import DomainColorLegend from '../components/visualization/DomainColorLegend'
+import DomainColorLegend, { LegendItem, getLegendItems, FeatureTypeLegend, SourceLegend } from '../components/visualization/DomainColorLegend'
+import ExportButtons from '../components/visualization/ExportButtons'
 import { useFusions, useVisualizationData } from '../hooks/useFusions'
 import { getSessionDomains, getSessionDomainSources, getSessionDomainsInfo, FusionResponse, SessionDomainInfo, DomainInfo } from '../api/client'
 import { DomainColorMap } from '../utils/domainColors'
@@ -25,6 +26,7 @@ function FusionCard({
   domainFilters,
   showStrandOrientation,
   domainColorMap,
+  legendItems,
 }: {
   fusion: FusionResponse
   sessionId: string
@@ -33,8 +35,10 @@ function FusionCard({
   domainFilters: DomainFilters
   showStrandOrientation: boolean
   domainColorMap: DomainColorMap
+  legendItems: LegendItem[]
 }) {
   const { data: vizData, isLoading } = useVisualizationData(sessionId, fusion.id)
+  const [svgContent, setSvgContent] = useState<string | null>(null)
 
   const fusionName = `${fusion.gene_a_symbol}--${fusion.gene_b_symbol}`
   const frameStatus = getFrameStatus(fusion.is_in_frame)
@@ -85,12 +89,20 @@ function FusionCard({
             <StatusBadge {...frameStatus} />
             {kinaseStatus && <StatusBadge {...kinaseStatus} />}
           </div>
-          <Link
-            to={`/session/${sessionId}/fusion/${fusion.id}`}
-            className="text-sm text-primary-600 hover:text-primary-700 dark:text-primary-400"
-          >
-            View Details →
-          </Link>
+          <div className="flex items-center space-x-4">
+            <ExportButtons
+              svgContent={svgContent}
+              sequence={null}
+              fusionName={fusionName}
+              legendItems={legendItems}
+            />
+            <Link
+              to={`/session/${sessionId}/fusion/${fusion.id}`}
+              className="text-sm text-primary-600 hover:text-primary-700 dark:text-primary-400"
+            >
+              View Details →
+            </Link>
+          </div>
         </div>
         <div className="mt-2 text-sm text-gray-500 dark:text-gray-400">
           <span className="mr-4">
@@ -109,13 +121,14 @@ function FusionCard({
             showStrandOrientation={showStrandOrientation}
             domainColorMap={domainColorMap}
             viewMode={viewMode}
+            onSvgReady={setSvgContent}
           />
         )}
         {activeTab === 'transcript' && (
-          <FusionTranscriptView data={vizData} />
+          <FusionTranscriptView data={vizData} onSvgReady={setSvgContent} />
         )}
         {activeTab === 'multilevel' && (
-          <MultiLevelView data={vizData} domainColorMap={domainColorMap} />
+          <MultiLevelView data={vizData} domainColorMap={domainColorMap} onSvgReady={setSvgContent} />
         )}
       </CardBody>
     </Card>
@@ -189,6 +202,27 @@ export default function BatchView() {
     }
     return map
   }, [sessionDomains])
+
+  // Create legend items for exports (using session-wide domain info)
+  const legendItems = useMemo(() => {
+    if (sessionDomainsInfo.length === 0) return []
+
+    const domains = sessionDomainsInfo.map(d => ({
+      name: d.name,
+      source: d.source,
+      start: 0,
+      end: 0,
+      status: d.status,
+      is_kinase: d.is_kinase
+    } as DomainInfo))
+
+    return getLegendItems(
+      domains,
+      domainColorMap,
+      domainFilters.sources || [],
+      viewMode === 'stacked' || viewMode === 'full'
+    )
+  }, [sessionDomainsInfo, domainColorMap, domainFilters.sources, viewMode])
 
   if (isLoadingFusions) {
     return (
@@ -324,13 +358,16 @@ export default function BatchView() {
         </CardBody>
       </Card>
 
-      {/* Domain Legend (shared across all fusions) */}
-      {domainFilters.colorMode === 'domain' && sessionDomainsInfo.length > 0 && (
-        <Card>
-          <CardHeader>
-            <h3 className="text-sm font-medium text-gray-900 dark:text-white">Domain Legend (Batch-Consistent Colors)</h3>
-          </CardHeader>
-          <CardBody>
+      {/* Color Legend (shared across all fusions) */}
+      <Card>
+        <CardHeader>
+          <h3 className="text-sm font-medium text-gray-900 dark:text-white">
+            {domainFilters.colorMode === 'domain' ? 'Domain Legend (Batch-Consistent Colors)' :
+             domainFilters.colorMode === 'type' ? 'Feature Type Legend' : 'Database Source Legend'}
+          </h3>
+        </CardHeader>
+        <CardBody>
+          {domainFilters.colorMode === 'domain' && sessionDomainsInfo.length > 0 && (
             <DomainColorLegend
               domains={sessionDomainsInfo.map(d => ({
                 name: d.name,
@@ -345,9 +382,26 @@ export default function BatchView() {
               showLost={viewMode === 'stacked' || viewMode === 'full'}
               compact
             />
-          </CardBody>
-        </Card>
-      )}
+          )}
+          {domainFilters.colorMode === 'type' && (
+            <FeatureTypeLegend
+              compact
+              domains={sessionDomainsInfo.map(d => ({
+                name: d.name,
+                source: d.source,
+                start: 0,
+                end: 0,
+                status: d.status,
+                is_kinase: d.is_kinase
+              } as DomainInfo))}
+              sourceFilter={domainFilters.sources || []}
+            />
+          )}
+          {domainFilters.colorMode === 'source' && (
+            <SourceLegend compact sources={availableSources} />
+          )}
+        </CardBody>
+      </Card>
 
       {/* Fusion Cards */}
       <div className="space-y-6">
@@ -361,6 +415,7 @@ export default function BatchView() {
             domainFilters={domainFilters}
             showStrandOrientation={showStrandOrientation}
             domainColorMap={domainColorMap}
+            legendItems={legendItems}
           />
         ))}
       </div>

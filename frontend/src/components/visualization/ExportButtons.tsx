@@ -72,7 +72,7 @@ export default function ExportButtons({
       x: 40,
       y: currentHeight + 15,
       columns,
-      columnWidth: 180,
+      columnWidth: 250,  // Match wider width for full domain names
       title: 'Protein Domains'
     })
 
@@ -114,6 +114,70 @@ export default function ExportButtons({
     }
   }
 
+  /**
+   * Convert SVG string to PNG blob using canvas (client-side)
+   */
+  const svgToPng = (svgString: string, width: number, height: number): Promise<Blob> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image()
+      const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' })
+      const url = URL.createObjectURL(svgBlob)
+
+      img.onload = () => {
+        const canvas = document.createElement('canvas')
+        canvas.width = width
+        canvas.height = height
+        const ctx = canvas.getContext('2d')
+        if (!ctx) {
+          URL.revokeObjectURL(url)
+          reject(new Error('Failed to get canvas context'))
+          return
+        }
+
+        // White background
+        ctx.fillStyle = '#ffffff'
+        ctx.fillRect(0, 0, width, height)
+        ctx.drawImage(img, 0, 0, width, height)
+
+        canvas.toBlob((blob) => {
+          URL.revokeObjectURL(url)
+          if (blob) resolve(blob)
+          else reject(new Error('Canvas toBlob failed'))
+        }, 'image/png')
+      }
+
+      img.onerror = () => {
+        URL.revokeObjectURL(url)
+        reject(new Error('Failed to load SVG image'))
+      }
+
+      img.src = url
+    })
+  }
+
+  /**
+   * Ensure SVG has explicit width/height attributes for canvas rendering
+   */
+  const prepareSvgForCanvas = (svg: string, width: number, height: number): string => {
+    const parser = new DOMParser()
+    const doc = parser.parseFromString(svg, 'image/svg+xml')
+    const svgElement = doc.querySelector('svg')
+
+    if (!svgElement) return svg
+
+    // Set explicit dimensions
+    svgElement.setAttribute('width', String(width))
+    svgElement.setAttribute('height', String(height))
+
+    // Add xmlns if missing (required for img.src loading)
+    if (!svgElement.getAttribute('xmlns')) {
+      svgElement.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
+    }
+
+    const serializer = new XMLSerializer()
+    return serializer.serializeToString(doc)
+  }
+
   const handleExportPNG = async () => {
     if (!svgContent) return
     setIsExporting('png')
@@ -130,8 +194,22 @@ export default function ExportButtons({
         ? Math.ceil(legendItems.length / 2) * 18 + 50
         : 0
 
-      const blob = await exportPNG(finalSvg, 1200, 400 + heightBonus, fusionName)
-      downloadBlob(blob, `${fusionName}.png`)
+      const width = 1200
+      const height = 400 + heightBonus
+
+      // Prepare SVG with explicit dimensions for canvas
+      finalSvg = prepareSvgForCanvas(finalSvg, width, height)
+
+      // Try client-side PNG conversion first
+      try {
+        const blob = await svgToPng(finalSvg, width, height)
+        downloadBlob(blob, `${fusionName}.png`)
+      } catch (clientError) {
+        console.warn('Client-side PNG export failed, trying server:', clientError)
+        // Fall back to server-side export
+        const blob = await exportPNG(finalSvg, width, height, fusionName)
+        downloadBlob(blob, `${fusionName}.png`)
+      }
     } catch (error) {
       console.error('PNG export failed:', error)
       alert('PNG export failed. Please try SVG export instead.')
