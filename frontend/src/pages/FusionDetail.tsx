@@ -418,6 +418,7 @@ export default function FusionDetail() {
                   domains={allDomains}
                   colorMap={domainColorMap}
                   sourceFilter={domainFilters.sources}
+                  showLost={schematicViewMode === 'stacked' || schematicViewMode === 'full'}
                   compact
                 />
               </div>

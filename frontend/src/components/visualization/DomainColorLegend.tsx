@@ -8,12 +8,14 @@ interface DomainColorLegendProps {
   title?: string
   compact?: boolean
   sourceFilter?: string[]  // Filter by sources (empty = show all)
+  showLost?: boolean  // Show lost domains (for stacked/full views)
 }
 
 export interface LegendItem {
   name: string
   color: string
   is_kinase: boolean
+  is_lost?: boolean  // Domain was lost in the fusion
 }
 
 /**
@@ -26,7 +28,8 @@ export default function DomainColorLegend({
   colorMap,
   title = 'Domain Colors',
   compact = false,
-  sourceFilter = []
+  sourceFilter = [],
+  showLost = false
 }: DomainColorLegendProps) {
   // Get unique domains by name, filtered by source
   const uniqueDomains = useMemo(() => {
@@ -34,8 +37,9 @@ export default function DomainColorLegend({
     const unique: LegendItem[] = []
 
     for (const domain of domains) {
-      // Skip lost domains
-      if (domain.status === 'lost') continue
+      // Skip lost domains unless showLost is enabled
+      const isLost = domain.status === 'lost'
+      if (isLost && !showLost) continue
 
       // Apply source filter
       if (sourceFilter.length > 0 && !sourceFilter.includes(domain.source)) continue
@@ -46,43 +50,56 @@ export default function DomainColorLegend({
         unique.push({
           name: domain.name,
           color: domain.is_kinase ? '#EF4444' : colorMap.getColor(domain.name),
-          is_kinase: domain.is_kinase
+          is_kinase: domain.is_kinase,
+          is_lost: isLost
         })
       }
     }
 
-    // Sort by name, but kinases first
+    // Sort: retained first, then lost; kinases first within each group
     return unique.sort((a, b) => {
+      // Lost domains go to the end
+      if (a.is_lost && !b.is_lost) return 1
+      if (!a.is_lost && b.is_lost) return -1
+      // Kinases first within retained/lost groups
       if (a.is_kinase && !b.is_kinase) return -1
       if (!a.is_kinase && b.is_kinase) return 1
       return a.name.localeCompare(b.name)
     })
-  }, [domains, colorMap, sourceFilter])
+  }, [domains, colorMap, sourceFilter, showLost])
 
   if (uniqueDomains.length === 0) return null
 
   if (compact) {
     return (
       <div className="flex flex-wrap gap-1">
-        {uniqueDomains.map((domain) => (
-          <div
-            key={domain.name}
-            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs"
-            style={{
-              backgroundColor: `${domain.color}20`,
-              border: `1px solid ${domain.color}`,
-              color: domain.color
-            }}
-          >
-            <span
-              className="w-2 h-2 rounded-full"
-              style={{ backgroundColor: domain.color }}
-            />
-            <span className="truncate max-w-[100px]" title={domain.name}>
-              {domain.name.length > 15 ? domain.name.slice(0, 15) + '...' : domain.name}
-            </span>
-          </div>
-        ))}
+        {uniqueDomains.map((domain) => {
+          // Muted styling for lost domains
+          const opacity = domain.is_lost ? 0.4 : 1
+          const displayColor = domain.color
+          return (
+            <div
+              key={domain.name + (domain.is_lost ? '-lost' : '')}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs"
+              style={{
+                backgroundColor: `${displayColor}${domain.is_lost ? '10' : '20'}`,
+                border: `1px solid ${displayColor}`,
+                color: displayColor,
+                opacity
+              }}
+              title={domain.is_lost ? `${domain.name} (lost in fusion)` : domain.name}
+            >
+              <span
+                className="w-2 h-2 rounded-full"
+                style={{ backgroundColor: displayColor }}
+              />
+              <span className="truncate max-w-[100px]">
+                {domain.name.length > 15 ? domain.name.slice(0, 15) + '...' : domain.name}
+                {domain.is_lost && <span className="ml-1 opacity-70">(lost)</span>}
+              </span>
+            </div>
+          )
+        })}
       </div>
     )
   }
@@ -95,8 +112,10 @@ export default function DomainColorLegend({
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
         {uniqueDomains.map((domain) => (
           <div
-            key={domain.name}
+            key={domain.name + (domain.is_lost ? '-lost' : '')}
             className="flex items-center gap-2"
+            style={{ opacity: domain.is_lost ? 0.5 : 1 }}
+            title={domain.is_lost ? `${domain.name} (lost in fusion)` : domain.name}
           >
             <span
               className="w-3 h-3 rounded-full flex-shrink-0"
@@ -104,11 +123,13 @@ export default function DomainColorLegend({
             />
             <span
               className="text-xs text-gray-600 dark:text-gray-400 truncate"
-              title={domain.name}
             >
               {domain.name}
               {domain.is_kinase && (
                 <span className="text-red-500 ml-1">(kinase)</span>
+              )}
+              {domain.is_lost && (
+                <span className="text-gray-400 ml-1">(lost)</span>
               )}
             </span>
           </div>
@@ -188,13 +209,15 @@ export function generateLegendSVG(
 export function getLegendItems(
   domains: DomainInfo[],
   colorMap: DomainColorMap,
-  sourceFilter: string[] = []
+  sourceFilter: string[] = [],
+  showLost: boolean = false
 ): LegendItem[] {
   const seen = new Set<string>()
   const items: LegendItem[] = []
 
   for (const domain of domains) {
-    if (domain.status === 'lost') continue
+    const isLost = domain.status === 'lost'
+    if (isLost && !showLost) continue
     if (sourceFilter.length > 0 && !sourceFilter.includes(domain.source)) continue
 
     const normalizedName = domain.name.toLowerCase().trim()
@@ -203,7 +226,8 @@ export function getLegendItems(
       items.push({
         name: domain.name,
         color: domain.is_kinase ? '#EF4444' : colorMap.getColor(domain.name),
-        is_kinase: domain.is_kinase
+        is_kinase: domain.is_kinase,
+        is_lost: isLost
       })
     }
   }

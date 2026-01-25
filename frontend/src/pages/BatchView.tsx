@@ -342,6 +342,7 @@ export default function BatchView() {
               } as DomainInfo))}
               colorMap={domainColorMap}
               sourceFilter={domainFilters.sources || []}
+              showLost={viewMode === 'stacked' || viewMode === 'full'}
               compact
             />
           </CardBody>
