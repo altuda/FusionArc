@@ -1242,7 +1242,8 @@ async def refresh_fusion_domains(
                     accession=feat.get("id"),
                     start=feat.get("start"),
                     end=feat.get("end"),
-                    score=feat.get("score")
+                    score=feat.get("score"),
+                    data_provider="Ensembl"
                 )
                 db.add(domain)
 
@@ -1261,7 +1262,8 @@ async def refresh_fusion_domains(
                             source=normalize_source_name(d.get("source", "InterPro")),
                             accession=d.get("accession"),
                             start=d.get("start"),
-                            end=d.get("end")
+                            end=d.get("end"),
+                            data_provider=d.get("data_provider", "InterPro")
                         )
                         db.add(domain)
             except Exception as e:
@@ -1315,7 +1317,8 @@ async def refresh_fusion_domains(
                     accession=feat.get("id"),
                     start=feat.get("start"),
                     end=feat.get("end"),
-                    score=feat.get("score")
+                    score=feat.get("score"),
+                    data_provider="Ensembl"
                 )
                 db.add(domain)
 
@@ -1334,7 +1337,8 @@ async def refresh_fusion_domains(
                             source=normalize_source_name(d.get("source", "InterPro")),
                             accession=d.get("accession"),
                             start=d.get("start"),
-                            end=d.get("end")
+                            end=d.get("end"),
+                            data_provider=d.get("data_provider", "InterPro")
                         )
                         db.add(domain)
             except Exception as e:

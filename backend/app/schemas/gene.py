@@ -25,6 +25,7 @@ class DomainResponse(BaseModel):
     accession: Optional[str] = None
     start: int
     end: int
+    data_provider: Optional[str] = None  # InterPro, UniProt, or CDD
 
     class Config:
         from_attributes = True

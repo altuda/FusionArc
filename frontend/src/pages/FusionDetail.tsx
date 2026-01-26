@@ -7,6 +7,7 @@ import LoadingSpinner from '../components/common/LoadingSpinner'
 import StatusBadge, { getFrameStatus, getKinaseStatus } from '../components/common/StatusBadge'
 import ViewModeSelector from '../components/common/ViewModeSelector'
 import DatabaseFilter from '../components/common/DatabaseFilter'
+import DataProviderFilter from '../components/common/DataProviderFilter'
 import ProteinSchematic, { DomainFilters, ColorMode, ViewMode } from '../components/visualization/ProteinSchematic'
 import SequenceView from '../components/visualization/SequenceView'
 import DomainDetailPanel from '../components/visualization/DomainDetailPanel'
@@ -37,6 +38,7 @@ export default function FusionDetail() {
   // Domain filters - default to 'domain' for consistent colors across fusions
   const [domainFilters, setDomainFilters] = useState<DomainFilters>({
     sources: [],
+    dataProviders: [],
     colorMode: 'domain',
   })
 
@@ -181,6 +183,28 @@ export default function FusionDetail() {
     return Array.from(sources).sort()
   }, [fusion])
 
+  // Get available data providers from domains
+  const availableDataProviders = useMemo(() => {
+    if (!fusion) return []
+    const providers = new Set<string>()
+    fusion.domains_a?.forEach(d => {
+      if (d.data_provider) providers.add(d.data_provider)
+    })
+    fusion.domains_b?.forEach(d => {
+      if (d.data_provider) providers.add(d.data_provider)
+    })
+    // Sort with preferred order: InterPro, UniProt, CDD, Ensembl
+    const order = ['InterPro', 'UniProt', 'CDD', 'Ensembl']
+    return Array.from(providers).sort((a, b) => {
+      const idxA = order.indexOf(a)
+      const idxB = order.indexOf(b)
+      if (idxA === -1 && idxB === -1) return a.localeCompare(b)
+      if (idxA === -1) return 1
+      if (idxB === -1) return -1
+      return idxA - idxB
+    })
+  }, [fusion])
+
   const toggleSourceFilter = useCallback((source: string) => {
     setDomainFilters(prev => {
       const currentSources = prev.sources || []
@@ -189,6 +213,18 @@ export default function FusionDetail() {
         sources: currentSources.includes(source)
           ? currentSources.filter(s => s !== source)
           : [...currentSources, source]
+      }
+    })
+  }, [])
+
+  const toggleDataProviderFilter = useCallback((provider: string) => {
+    setDomainFilters(prev => {
+      const currentProviders = prev.dataProviders || []
+      return {
+        ...prev,
+        dataProviders: currentProviders.includes(provider)
+          ? currentProviders.filter(p => p !== provider)
+          : [...currentProviders, provider]
       }
     })
   }, [])
@@ -395,7 +431,14 @@ export default function FusionDetail() {
                 )}
               </div>
 
-              {/* Row 3: Database filter */}
+              {/* Row 3: Data provider filter */}
+              <DataProviderFilter
+                providers={availableDataProviders}
+                selectedProviders={domainFilters.dataProviders || []}
+                onToggle={toggleDataProviderFilter}
+              />
+
+              {/* Row 4: Database filter */}
               <DatabaseFilter
                 sources={availableSources}
                 selectedSources={domainFilters.sources || []}

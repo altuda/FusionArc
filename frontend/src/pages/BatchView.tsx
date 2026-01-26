@@ -147,6 +147,7 @@ export default function BatchView() {
 
   const [domainFilters, setDomainFilters] = useState<DomainFilters>({
     sources: [],
+    dataProviders: [],
     colorMode: 'domain',
   })
 

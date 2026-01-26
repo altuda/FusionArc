@@ -27,6 +27,7 @@ class DomainInfo(BaseModel):
     score: Optional[float] = None  # E-value or hit score (lower is more significant)
     status: str  # retained, truncated, lost
     is_kinase: bool = False
+    data_provider: Optional[str] = None  # InterPro, UniProt, or CDD
 
     class Config:
         from_attributes = True

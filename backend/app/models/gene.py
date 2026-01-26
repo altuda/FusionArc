@@ -81,6 +81,7 @@ class Domain(Base):
     start = Column(Integer)
     end = Column(Integer)
     score = Column(Float)  # E-value or hit score from domain prediction
+    data_provider = Column(String(50))  # InterPro, UniProt, or CDD - which API provided this data
     cached_at = Column(DateTime, default=datetime.utcnow)
 
     protein = relationship("Protein", back_populates="domains")

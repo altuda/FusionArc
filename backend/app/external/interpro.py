@@ -379,7 +379,8 @@ class InterProClient:
                         "accession": entry.get("interpro_id"),
                         "start": entry["start"],
                         "end": entry["end"],
-                        "type": entry.get("type", "domain")
+                        "type": entry.get("type", "domain"),
+                        "data_provider": "InterPro"
                     })
 
         # Process UniProt features
@@ -393,7 +394,8 @@ class InterProClient:
                         "accession": feature.get("accession"),
                         "start": feature["start"],
                         "end": feature["end"],
-                        "type": feature.get("type", "domain")
+                        "type": feature.get("type", "domain"),
+                        "data_provider": "UniProt"
                     })
 
         # Process CDD domains (RPS-BLAST hits)
@@ -407,7 +409,8 @@ class InterProClient:
                         "accession": cdd.get("accession"),
                         "start": cdd["start"],
                         "end": cdd["end"],
-                        "type": cdd.get("type", "domain")
+                        "type": cdd.get("type", "domain"),
+                        "data_provider": "CDD"
                     })
 
         # Deduplicate by name + position

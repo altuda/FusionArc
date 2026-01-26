@@ -30,6 +30,7 @@ export interface DomainInfo {
   score?: number  // E-value or hit score (lower is more significant)
   status: string
   is_kinase: boolean
+  data_provider?: string  // InterPro, UniProt, CDD, or Ensembl
 }
 
 export interface FusionExonInfo {

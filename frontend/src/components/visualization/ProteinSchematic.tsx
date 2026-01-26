@@ -27,6 +27,7 @@ export type ViewMode = 'fusion' | 'full' | 'stacked'
 
 export interface DomainFilters {
   sources: string[]
+  dataProviders: string[]  // InterPro, UniProt, CDD, Ensembl
   colorMode: ColorMode
 }
 
@@ -80,7 +81,7 @@ const SOURCE_COLORS: Record<string, string> = {
   'Seg': '#78716C', 'ncoils': '#0EA5E9', 'sifts': '#D946EF', 'alphafold': '#22C55E', 'default': '#6366F1',
 }
 
-const defaultFilters: DomainFilters = { sources: [], colorMode: 'domain' }
+const defaultFilters: DomainFilters = { sources: [], dataProviders: [], colorMode: 'domain' }
 
 export default function ProteinSchematic({ data, filters = defaultFilters, showStrandOrientation = false, onSvgReady, domainColorMap, viewMode = 'fusion' }: ProteinSchematicProps) {
   const svgRef = useRef<SVGSVGElement>(null)
@@ -132,9 +133,17 @@ export default function ProteinSchematic({ data, filters = defaultFilters, showS
       return SOURCE_COLORS[source] || SOURCE_COLORS['default']
     }
 
-    const shouldShowBySource = (domain: DomainInfo): boolean => {
+    const shouldShowDomain = (domain: DomainInfo): boolean => {
+      // Filter by database source (Pfam, SMART, etc.)
       const sources = filters.sources || []
-      return sources.length === 0 || sources.includes(domain.source)
+      const sourceMatch = sources.length === 0 || sources.includes(domain.source)
+
+      // Filter by data provider (InterPro, CDD, etc.)
+      const dataProviders = filters.dataProviders || []
+      const providerMatch = dataProviders.length === 0 ||
+        Boolean(domain.data_provider && dataProviders.includes(domain.data_provider))
+
+      return sourceMatch && providerMatch
     }
 
     const drawDomainRect = (
@@ -181,7 +190,7 @@ export default function ProteinSchematic({ data, filters = defaultFilters, showS
       g.append('line').attr('x1', 0).attr('y1', yCenter).attr('x2', innerWidth).attr('y2', yCenter).attr('stroke', lineColor).attr('stroke-width', 4)
 
       geneData.domains.forEach((domain) => {
-        if (!shouldShowBySource(domain)) return
+        if (!shouldShowDomain(domain)) return
         if (!showAllDomains && domain.status === 'lost') return
         const startPos = xScale(domain.start)
         const endPos = xScale(domain.end)
@@ -224,7 +233,7 @@ export default function ProteinSchematic({ data, filters = defaultFilters, showS
       g.append('line').attr('x1', 0).attr('y1', innerHeight / 2).attr('x2', innerWidth).attr('y2', innerHeight / 2).attr('stroke', lineColor).attr('stroke-width', 4)
 
       data.gene_a.domains.forEach((domain) => {
-        if (!shouldShowBySource(domain) || domain.status === 'lost') return
+        if (!shouldShowDomain(domain) || domain.status === 'lost') return
         const startPos = xScale(domain.start)
         const endPos = xScale(Math.min(domain.end, data.junction_position))
         if (endPos <= startPos) return
@@ -232,7 +241,7 @@ export default function ProteinSchematic({ data, filters = defaultFilters, showS
       })
 
       data.gene_b.domains.forEach((domain) => {
-        if (!shouldShowBySource(domain) || domain.status === 'lost') return
+        if (!shouldShowDomain(domain) || domain.status === 'lost') return
         const offset = data.junction_position - (data.gene_b.aa_breakpoint || 0)
         const startPos = xScale(Math.max(domain.start + offset, data.junction_position))
         const endPos = xScale(domain.end + offset)

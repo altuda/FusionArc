@@ -80,9 +80,17 @@ export default function FusionSchematicView({ data, domainColorMap, filters, onS
     return map
   }, [data, domainColorMap])
 
-  const shouldShowDomain = (domain: { source: string }): boolean => {
-    if (!filters?.sources || filters.sources.length === 0) return true
-    return filters.sources.includes(domain.source)
+  const shouldShowDomain = (domain: { source: string; data_provider?: string }): boolean => {
+    // Filter by database source
+    const sources = filters?.sources || []
+    const sourceMatch = sources.length === 0 || sources.includes(domain.source)
+
+    // Filter by data provider
+    const dataProviders = filters?.dataProviders || []
+    const providerMatch = dataProviders.length === 0 ||
+      Boolean(domain.data_provider && dataProviders.includes(domain.data_provider))
+
+    return sourceMatch && providerMatch
   }
 
   const getDomainColor = (name: string, source: string, isKinase: boolean): string => {
