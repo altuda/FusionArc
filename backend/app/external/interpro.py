@@ -12,17 +12,33 @@ InterPro integrates domain data from multiple sources:
 - PRINTS
 - HAMAP
 - TIGRFAMs
+
+Also includes direct NCBI CDD querying for RPS-BLAST hits not in curated databases.
 """
 
 import httpx
 import asyncio
-from typing import Optional, List, Dict, Any
+import re
+import json
+from typing import Optional, List, Dict, Any, Set
 from tenacity import retry, stop_after_attempt, wait_exponential
 import logging
 
 logger = logging.getLogger(__name__)
 
 INTERPRO_API_BASE = "https://www.ebi.ac.uk/interpro/api"
+NCBI_CDD_API = "https://www.ncbi.nlm.nih.gov/Structure/cdd/wrpsb.cgi"
+
+# Map CDD accession prefixes to source names
+CDD_SOURCE_MAP = {
+    "pfam": "Pfam",
+    "smart": "SMART",
+    "cd": "CDD",
+    "COG": "COG",
+    "PRK": "PRK",
+    "TIGR": "TIGRFAMs",
+    "PHA": "CDD",  # Phage clusters
+}
 
 
 class InterProClient:
@@ -123,6 +139,127 @@ class InterProClient:
             return None
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    async def get_cdd_domains(self, uniprot_id: str, evalue_threshold: float = 0.01) -> List[Dict[str, Any]]:
+        """
+        Get domain hits directly from NCBI CDD using RPS-BLAST.
+
+        This returns sequence similarity-based domain hits that may not be in
+        curated databases like UniProt/InterPro. Uses the same data source as
+        ProteinPaint.
+
+        Args:
+            uniprot_id: UniProt accession (e.g., Q92793)
+            evalue_threshold: E-value cutoff for domain hits (default 0.01)
+        """
+        try:
+            async with self._semaphore:
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    # Query NCBI CDD with UniProt ID
+                    params = {
+                        "seqinput": uniprot_id,
+                        "dmode": "rep",  # Representative domains
+                        "db": "cdd"      # Full CDD database
+                    }
+                    response = await client.get(NCBI_CDD_API, params=params)
+                    response.raise_for_status()
+
+                    # Parse the JavaScript-style response
+                    text = response.text
+                    match = re.search(r'let initObj = ({.*?});', text, re.DOTALL)
+                    if not match:
+                        logger.warning(f"Could not parse CDD response for {uniprot_id}")
+                        return []
+
+                    data = json.loads(match.group(1))
+                    seen_positions: Set[tuple] = set()
+
+                    # First pass: collect pssmids and filter annotations
+                    filtered_annots = []
+                    pssmids = set()
+
+                    for annot in data.get("annots", {}).get("allAligns", []):
+                        acc = annot.get("acc", "")
+                        evalue = annot.get("evalue", 1.0)
+
+                        # Filter by e-value
+                        if evalue > evalue_threshold:
+                            continue
+
+                        start = annot.get("from")
+                        end = annot.get("to")
+
+                        if not start or not end:
+                            continue
+
+                        # Deduplicate by accession + position
+                        pos_key = (acc, start, end)
+                        if pos_key in seen_positions:
+                            continue
+                        seen_positions.add(pos_key)
+
+                        pssmid = annot.get("pssmid")
+                        if pssmid:
+                            pssmids.add(pssmid)
+
+                        filtered_annots.append(annot)
+
+                    # Fetch domain metadata from Entrez esummary API
+                    pssmid_lookup = {}
+                    if pssmids:
+                        try:
+                            ids_param = ",".join(str(p) for p in pssmids)
+                            esummary_url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=cdd&id={ids_param}&retmode=json"
+                            meta_response = await client.get(esummary_url, timeout=30.0)
+                            if meta_response.status_code == 200:
+                                meta_data = meta_response.json()
+                                result = meta_data.get("result", {})
+                                for uid in result.get("uids", []):
+                                    info = result.get(uid, {})
+                                    pssmid_lookup[int(uid)] = {
+                                        "title": info.get("title"),  # Short name like "HAT_KAT11"
+                                        "subtitle": info.get("subtitle"),  # Brief description
+                                        "abstract": info.get("abstract")  # Full description
+                                    }
+                        except Exception as e:
+                            logger.warning(f"Failed to fetch CDD metadata: {e}")
+
+                    # Build domain list with metadata
+                    domains = []
+                    for annot in filtered_annots:
+                        acc = annot.get("acc", "")
+                        pssmid = annot.get("pssmid")
+
+                        # Determine source from accession prefix
+                        source = "CDD"
+                        for prefix, src_name in CDD_SOURCE_MAP.items():
+                            if acc.lower().startswith(prefix.lower()):
+                                source = src_name
+                                break
+
+                        # Look up domain metadata
+                        meta = pssmid_lookup.get(pssmid, {}) if pssmid else {}
+                        name = meta.get("title") or acc
+                        description = meta.get("subtitle") or meta.get("abstract") or f"CDD hit: {acc}"
+
+                        domains.append({
+                            "name": name,
+                            "accession": acc,
+                            "source": source,
+                            "start": annot.get("from"),
+                            "end": annot.get("to"),
+                            "evalue": annot.get("evalue", 1.0),
+                            "description": description,
+                            "type": "domain"
+                        })
+
+                    logger.info(f"Found {len(domains)} CDD domains for {uniprot_id}")
+                    return domains
+
+        except Exception as e:
+            logger.error(f"Error fetching CDD domains for {uniprot_id}: {e}")
+            return []
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     async def get_uniprot_features(self, uniprot_id: str) -> List[Dict[str, Any]]:
         """
         Get protein features directly from UniProt.
@@ -187,7 +324,9 @@ class InterProClient:
     async def get_comprehensive_domains(
         self,
         gene_symbol: str,
-        protein_length: Optional[int] = None
+        protein_length: Optional[int] = None,
+        include_cdd: bool = True,
+        cdd_evalue_threshold: float = 0.01
     ) -> List[Dict[str, Any]]:
         """
         Get comprehensive domain annotations for a gene from multiple sources.
@@ -195,6 +334,13 @@ class InterProClient:
         Combines:
         - InterPro (aggregates Pfam, SMART, CDD, etc.)
         - UniProt features
+        - NCBI CDD RPS-BLAST hits (optional, for domains like ProteinPaint shows)
+
+        Args:
+            gene_symbol: Gene symbol (e.g., "CREBBP")
+            protein_length: Optional protein length for validation
+            include_cdd: Whether to include direct NCBI CDD hits (default True)
+            cdd_evalue_threshold: E-value cutoff for CDD hits (default 0.01)
 
         Returns deduplicated, merged domain list.
         """
@@ -208,13 +354,19 @@ class InterProClient:
 
         logger.info(f"Found UniProt ID {uniprot_id} for {gene_symbol}")
 
-        # Fetch from both sources in parallel
-        interpro_task = self.get_protein_entries(uniprot_id)
-        uniprot_task = self.get_uniprot_features(uniprot_id)
+        # Fetch from all sources in parallel
+        tasks = [
+            self.get_protein_entries(uniprot_id),
+            self.get_uniprot_features(uniprot_id),
+        ]
+        if include_cdd:
+            tasks.append(self.get_cdd_domains(uniprot_id, cdd_evalue_threshold))
 
-        interpro_entries, uniprot_features = await asyncio.gather(
-            interpro_task, uniprot_task, return_exceptions=True
-        )
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        interpro_entries = results[0]
+        uniprot_features = results[1]
+        cdd_domains = results[2] if include_cdd and len(results) > 2 else []
 
         # Process InterPro entries
         if isinstance(interpro_entries, list):
@@ -244,6 +396,20 @@ class InterProClient:
                         "type": feature.get("type", "domain")
                     })
 
+        # Process CDD domains (RPS-BLAST hits)
+        if isinstance(cdd_domains, list):
+            for cdd in cdd_domains:
+                if cdd.get("start") and cdd.get("end"):
+                    domains.append({
+                        "name": cdd.get("name", "Unknown"),
+                        "description": cdd.get("description"),
+                        "source": cdd.get("source", "CDD"),
+                        "accession": cdd.get("accession"),
+                        "start": cdd["start"],
+                        "end": cdd["end"],
+                        "type": cdd.get("type", "domain")
+                    })
+
         # Deduplicate by name + position
         seen = set()
         unique_domains = []
@@ -257,7 +423,7 @@ class InterProClient:
         # Sort by start position
         unique_domains.sort(key=lambda x: (x["start"], x["end"]))
 
-        logger.info(f"Found {len(unique_domains)} domains for {gene_symbol}")
+        logger.info(f"Found {len(unique_domains)} domains for {gene_symbol} (CDD: {include_cdd})")
         return unique_domains
 
 
