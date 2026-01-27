@@ -155,38 +155,68 @@ export default function FusionDetail() {
       return sessionColorMapCache.get(sessionId)!
     }
 
-    // Otherwise create a fusion-specific color map
-    if (!fusion) return new DomainColorMap()
+    // Otherwise create a fusion-specific color map using vizData for consistency with legend
+    if (!vizData) return new DomainColorMap()
     const map = new DomainColorMap()
     // Preload all domain names for consistent colors
-    const allDomains = [...(fusion.domains_a || []), ...(fusion.domains_b || [])]
+    const allDomains = [...vizData.gene_a.domains, ...vizData.gene_b.domains]
     map.preloadFromDomains(allDomains)
     return map
-  }, [fusion, useBatchColors, sessionId, sessionDomains]) // sessionDomains triggers re-render when loaded
+  }, [vizData, useBatchColors, sessionId, sessionDomains]) // sessionDomains triggers re-render when loaded
 
-  // Get all domains for the legend (filtered by CDD toggle)
+  // Get domains for the legend, filtered by view mode to match visualization
+  // In fusion view, only show domains that are actually visible (not lost/clipped)
   const allDomains = useMemo(() => {
-    if (!fusion) return []
-    const domains = [...(fusion.domains_a || []), ...(fusion.domains_b || [])]
+    if (!vizData) return []
+
+    // Helper to check if domain would be visible in fusion view
+    const isVisibleInFusionView = (domain: typeof vizData.gene_a.domains[0], gene: 'a' | 'b') => {
+      // Lost domains are never visible in fusion view
+      if (domain.status === 'lost') return false
+
+      if (gene === 'a') {
+        // Gene A: domain must start before junction to be visible
+        return domain.start < (vizData.gene_a.aa_breakpoint || vizData.junction_position)
+      } else {
+        // Gene B: domain must end after the breakpoint to be visible
+        return domain.end > (vizData.gene_b.aa_breakpoint || 0)
+      }
+    }
+
+    let domains: typeof vizData.gene_a.domains
+
+    if (schematicViewMode === 'fusion') {
+      // In fusion view, only include domains that are visible
+      domains = [
+        ...vizData.gene_a.domains.filter(d => isVisibleInFusionView(d, 'a')),
+        ...vizData.gene_b.domains.filter(d => isVisibleInFusionView(d, 'b'))
+      ]
+    } else {
+      // In stacked/full view, include all domains
+      domains = [...vizData.gene_a.domains, ...vizData.gene_b.domains]
+    }
+
     if (!includeCDD) {
       return domains.filter(d => d.data_provider !== 'CDD')
     }
     return domains
-  }, [fusion, includeCDD])
+  }, [vizData, includeCDD, schematicViewMode])
 
-  // Generate legend items respecting the source filter
+  // Generate legend items respecting the source filter and view mode
   const legendItems = useMemo(() => {
-    return getLegendItems(allDomains, domainColorMap, domainFilters.sources)
-  }, [allDomains, domainColorMap, domainFilters.sources])
+    const showLost = schematicViewMode === 'stacked' || schematicViewMode === 'full'
+    return getLegendItems(allDomains, domainColorMap, domainFilters.sources, showLost)
+  }, [allDomains, domainColorMap, domainFilters.sources, schematicViewMode])
 
   // Get available sources from domains - must be before any conditional returns
+  // Use vizData for consistency with allDomains
   const availableSources = useMemo(() => {
-    if (!fusion) return []
+    if (!vizData) return []
     const sources = new Set<string>()
-    fusion.domains_a?.forEach(d => sources.add(d.source))
-    fusion.domains_b?.forEach(d => sources.add(d.source))
+    vizData.gene_a.domains.forEach(d => sources.add(d.source))
+    vizData.gene_b.domains.forEach(d => sources.add(d.source))
     return Array.from(sources).sort()
-  }, [fusion])
+  }, [vizData])
 
   const toggleSourceFilter = useCallback((source: string) => {
     setDomainFilters(prev => {

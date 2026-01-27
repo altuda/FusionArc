@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from 'react'
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import Card, { CardHeader, CardBody } from '../components/common/Card'
@@ -13,7 +13,7 @@ import MultiLevelView from '../components/visualization/MultiLevelView'
 import DomainColorLegend, { LegendItem, getLegendItems, FeatureTypeLegend, SourceLegend } from '../components/visualization/DomainColorLegend'
 import ExportButtons from '../components/visualization/ExportButtons'
 import { useFusions, useVisualizationData } from '../hooks/useFusions'
-import { getSessionDomains, getSessionDomainSources, getSessionDomainsInfo, refreshFusionDomains, FusionResponse, SessionDomainInfo, DomainInfo } from '../api/client'
+import { getSessionDomains, getSessionDomainSources, refreshFusionDomains, FusionResponse, DomainInfo } from '../api/client'
 import { DomainColorMap } from '../utils/domainColors'
 import { computeEffectiveFilters } from '../utils/domainFilters'
 
@@ -29,6 +29,7 @@ function FusionCard({
   showStrandOrientation,
   domainColorMap,
   legendItems,
+  onDomainsLoaded,
 }: {
   fusion: FusionResponse
   sessionId: string
@@ -38,8 +39,17 @@ function FusionCard({
   showStrandOrientation: boolean
   domainColorMap: DomainColorMap
   legendItems: LegendItem[]
+  onDomainsLoaded?: (fusionId: string, domains: DomainInfo[]) => void
 }) {
   const { data: vizData, isLoading } = useVisualizationData(sessionId, fusion.id)
+
+  // Report domains when visualization data loads
+  useEffect(() => {
+    if (vizData && onDomainsLoaded) {
+      const allDomains = [...vizData.gene_a.domains, ...vizData.gene_b.domains]
+      onDomainsLoaded(fusion.id, allDomains)
+    }
+  }, [vizData, fusion.id, onDomainsLoaded])
   const [svgContent, setSvgContent] = useState<string | null>(null)
 
   const fusionName = `${fusion.gene_a_symbol}--${fusion.gene_b_symbol}`
@@ -144,10 +154,11 @@ export default function BatchView() {
   const [viewMode, setViewMode] = useState<ViewMode>('fusion')
   const [showStrandOrientation, setShowStrandOrientation] = useState(false)
   const [sessionDomains, setSessionDomains] = useState<string[] | null>(null)
-  const [sessionDomainsInfo, setSessionDomainsInfo] = useState<SessionDomainInfo[]>([])
   const [availableSources, setAvailableSources] = useState<string[]>([])
   const [isLoadingDomains, setIsLoadingDomains] = useState(false)
   const [isRefreshingDomains, setIsRefreshingDomains] = useState(false)
+  const [aggregatedDomains, setAggregatedDomains] = useState<DomainInfo[]>([])
+  const fusionDomainsRef = useRef<Map<string, DomainInfo[]>>(new Map())
 
   const [domainFilters, setDomainFilters] = useState<DomainFilters>({
     sources: [],
@@ -155,6 +166,7 @@ export default function BatchView() {
     colorMode: 'domain',
   })
   const [includeCDD, setIncludeCDD] = useState(true)
+  const [useBatchConsistentColors, setUseBatchConsistentColors] = useState(true)
 
   const { data: fusionsData, isLoading: isLoadingFusions } = useFusions(sessionId)
 
@@ -164,19 +176,16 @@ export default function BatchView() {
 
     setIsLoadingDomains(true)
     try {
-      const [domains, sources, domainsInfo] = await Promise.all([
+      const [domains, sources] = await Promise.all([
         getSessionDomains(sessionId),
-        getSessionDomainSources(sessionId),
-        getSessionDomainsInfo(sessionId)
+        getSessionDomainSources(sessionId)
       ])
       setSessionDomains(domains)
       setAvailableSources(sources)
-      setSessionDomainsInfo(domainsInfo)
     } catch (error) {
       console.error('Failed to load session data:', error)
       setSessionDomains([])
       setAvailableSources([])
-      setSessionDomainsInfo([])
     } finally {
       setIsLoadingDomains(false)
     }
@@ -200,6 +209,15 @@ export default function BatchView() {
     })
   }, [])
 
+  // Collect domains from all fusions for the legend
+  const handleDomainsLoaded = useCallback((fusionId: string, domains: DomainInfo[]) => {
+    fusionDomainsRef.current.set(fusionId, domains)
+    // Aggregate all domains from all fusions
+    const allDomains: DomainInfo[] = []
+    fusionDomainsRef.current.forEach(d => allDomains.push(...d))
+    setAggregatedDomains(allDomains)
+  }, [])
+
   // Handler for refreshing domains for all fusions in batch
   // Process sequentially to avoid SQLite database locking issues
   const handleRefreshDomains = useCallback(async () => {
@@ -221,10 +239,11 @@ export default function BatchView() {
         queryClient.invalidateQueries({ queryKey: ['fusion', sessionId, fusion.id] })
         queryClient.invalidateQueries({ queryKey: ['visualization', sessionId, fusion.id] })
       })
-      // Reset session domains to trigger reload
+      // Reset session domains and aggregated domains to trigger reload
       setSessionDomains(null)
-      setSessionDomainsInfo([])
       setAvailableSources([])
+      setAggregatedDomains([])
+      fusionDomainsRef.current.clear()
     } catch (error) {
       console.error('Failed to refresh domains:', error)
     } finally {
@@ -235,45 +254,36 @@ export default function BatchView() {
   // Create shared domain color map
   const domainColorMap = useMemo(() => {
     const map = new DomainColorMap()
-    if (sessionDomains && sessionDomains.length > 0) {
+    if (useBatchConsistentColors && sessionDomains && sessionDomains.length > 0) {
       map.preloadFromDomains(sessionDomains.map(name => ({ name })))
     }
     return map
-  }, [sessionDomains])
+  }, [sessionDomains, useBatchConsistentColors])
 
   // Compute effective filters based on includeCDD toggle
   const effectiveFilters = useMemo((): DomainFilters => {
     return computeEffectiveFilters(domainFilters, includeCDD)
   }, [domainFilters, includeCDD])
 
-  // Filter domains based on includeCDD for legend
-  const filteredSessionDomainsInfo = useMemo(() => {
+  // Filter aggregated domains based on includeCDD for legend
+  const filteredAggregatedDomains = useMemo(() => {
     if (!includeCDD) {
-      return sessionDomainsInfo.filter(d => d.data_provider !== 'CDD')
+      return aggregatedDomains.filter(d => d.data_provider !== 'CDD')
     }
-    return sessionDomainsInfo
-  }, [sessionDomainsInfo, includeCDD])
+    return aggregatedDomains
+  }, [aggregatedDomains, includeCDD])
 
-  // Create legend items for exports (using session-wide domain info)
+  // Create legend items for exports (using aggregated domain info from visualization data)
   const legendItems = useMemo(() => {
-    if (filteredSessionDomainsInfo.length === 0) return []
-
-    const domains = filteredSessionDomainsInfo.map(d => ({
-      name: d.name,
-      source: d.source,
-      start: 0,
-      end: 0,
-      status: d.status,
-      is_kinase: d.is_kinase
-    } as DomainInfo))
+    if (filteredAggregatedDomains.length === 0) return []
 
     return getLegendItems(
-      domains,
+      filteredAggregatedDomains,
       domainColorMap,
       domainFilters.sources || [],
       viewMode === 'stacked' || viewMode === 'full'
     )
-  }, [filteredSessionDomainsInfo, domainColorMap, domainFilters.sources, viewMode])
+  }, [filteredAggregatedDomains, domainColorMap, domainFilters.sources, viewMode])
 
   if (isLoadingFusions) {
     return (
@@ -419,6 +429,19 @@ export default function BatchView() {
                     </select>
                   </div>
 
+                  {domainFilters.colorMode === 'domain' && (
+                    <label className="flex items-center space-x-2 text-gray-600 dark:text-gray-400 text-sm"
+                           title="Use consistent domain colors across all fusions in the batch">
+                      <input
+                        type="checkbox"
+                        checked={useBatchConsistentColors}
+                        onChange={(e) => setUseBatchConsistentColors(e.target.checked)}
+                        className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                      />
+                      <span>Batch consistent colors</span>
+                    </label>
+                  )}
+
                   <label className="flex items-center space-x-2 text-gray-600 dark:text-gray-400 text-sm" title="Include domain predictions from NCBI CDD (Conserved Domain Database)">
                     <input
                       type="checkbox"
@@ -446,21 +469,15 @@ export default function BatchView() {
       <Card>
         <CardHeader>
           <h3 className="text-sm font-medium text-gray-900 dark:text-white">
-            {domainFilters.colorMode === 'domain' ? 'Domain Legend (Batch-Consistent Colors)' :
-             domainFilters.colorMode === 'type' ? 'Feature Type Legend' : 'Database Source Legend'}
+            {domainFilters.colorMode === 'domain'
+              ? (useBatchConsistentColors ? 'Domain Legend (Batch-Consistent Colors)' : 'Domain Legend')
+              : domainFilters.colorMode === 'type' ? 'Feature Type Legend' : 'Database Source Legend'}
           </h3>
         </CardHeader>
         <CardBody>
-          {domainFilters.colorMode === 'domain' && filteredSessionDomainsInfo.length > 0 && (
+          {domainFilters.colorMode === 'domain' && filteredAggregatedDomains.length > 0 && (
             <DomainColorLegend
-              domains={filteredSessionDomainsInfo.map(d => ({
-                name: d.name,
-                source: d.source,
-                start: 0,
-                end: 0,
-                status: d.status,
-                is_kinase: d.is_kinase
-              } as DomainInfo))}
+              domains={filteredAggregatedDomains}
               colorMap={domainColorMap}
               sourceFilter={domainFilters.sources || []}
               showLost={viewMode === 'stacked' || viewMode === 'full'}
@@ -470,14 +487,7 @@ export default function BatchView() {
           {domainFilters.colorMode === 'type' && (
             <FeatureTypeLegend
               compact
-              domains={filteredSessionDomainsInfo.map(d => ({
-                name: d.name,
-                source: d.source,
-                start: 0,
-                end: 0,
-                status: d.status,
-                is_kinase: d.is_kinase
-              } as DomainInfo))}
+              domains={filteredAggregatedDomains}
               sourceFilter={domainFilters.sources || []}
             />
           )}
@@ -500,6 +510,7 @@ export default function BatchView() {
             showStrandOrientation={showStrandOrientation}
             domainColorMap={domainColorMap}
             legendItems={legendItems}
+            onDomainsLoaded={handleDomainsLoaded}
           />
         ))}
       </div>
