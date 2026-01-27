@@ -502,6 +502,7 @@ class SessionDomainInfo(BaseModel):
     source: str
     status: str = "unknown"
     is_kinase: bool = False
+    data_provider: Optional[str] = None
 
 
 @router.get("/{session_id}/domains", response_model=List[str])
@@ -555,7 +556,8 @@ async def get_session_domains_info(
                     name=name,
                     source=domain.get("source", ""),
                     status=domain.get("status", "unknown"),
-                    is_kinase=domain.get("is_kinase", False)
+                    is_kinase=domain.get("is_kinase", False),
+                    data_provider=domain.get("data_provider")
                 )
         for domain in (fusion.domains_b or []):
             name = domain.get("name")
@@ -564,7 +566,8 @@ async def get_session_domains_info(
                     name=name,
                     source=domain.get("source", ""),
                     status=domain.get("status", "unknown"),
-                    is_kinase=domain.get("is_kinase", False)
+                    is_kinase=domain.get("is_kinase", False),
+                    data_provider=domain.get("data_provider")
                 )
 
     return sorted(domains_by_name.values(), key=lambda d: d.name)
@@ -1200,6 +1203,8 @@ async def refresh_fusion_domains(
     (InterPro, UniProt, Pfam, SMART, CDD, etc.) for proteins that may have
     been cached before InterPro integration was added.
     """
+    import traceback
+
     # Get the fusion
     result = await db.execute(
         select(Fusion)
@@ -1211,8 +1216,14 @@ async def refresh_fusion_domains(
     if not fusion:
         raise HTTPException(404, "Fusion not found")
 
+    logger.info(f"Refreshing domains for fusion {fusion.gene_a_symbol}--{fusion.gene_b_symbol}")
+
     # Get InterPro client
-    interpro_client = get_interpro_client()
+    try:
+        interpro_client = get_interpro_client()
+    except Exception as e:
+        logger.error(f"Failed to get InterPro client: {e}")
+        interpro_client = None
 
     updated_domains_a = []
     updated_domains_b = []
@@ -1232,66 +1243,77 @@ async def refresh_fusion_domains(
 
             # Fetch from Ensembl
             ensembl = get_ensembl_client(fusion.genome_build or "hg38")
-            features = await ensembl.get_protein_features(protein_a.id)
-            for feat in features:
-                domain = Domain(
-                    protein_id=protein_a.id,
-                    name=feat.get("description", feat.get("type", "Unknown")),
-                    description=feat.get("description"),
-                    source=normalize_source_name(feat.get("type", "Unknown")),
-                    accession=feat.get("id"),
-                    start=feat.get("start"),
-                    end=feat.get("end"),
-                    score=feat.get("score"),
-                    data_provider="Ensembl"
-                )
-                db.add(domain)
+            try:
+                features = await ensembl.get_protein_features(protein_a.id)
+                for feat in features:
+                    domain = Domain(
+                        protein_id=protein_a.id,
+                        name=feat.get("description", feat.get("type", "Unknown")),
+                        description=feat.get("description"),
+                        source=normalize_source_name(feat.get("type", "Unknown")),
+                        accession=feat.get("id"),
+                        start=feat.get("start"),
+                        end=feat.get("end"),
+                        score=feat.get("score"),
+                        data_provider="Ensembl"
+                    )
+                    db.add(domain)
+            except Exception as e:
+                logger.error(f"Error fetching Ensembl domains for {fusion.gene_a_symbol} (protein {protein_a.id}): {e}")
 
             # Fetch from InterPro
-            try:
-                interpro_domains = await interpro_client.get_comprehensive_domains(
-                    fusion.gene_a_symbol,
-                    protein_length=protein_a.length
-                )
-                for d in interpro_domains:
-                    if d.get("start") and d.get("end"):
-                        domain = Domain(
-                            protein_id=protein_a.id,
-                            name=d.get("name", "Unknown"),
-                            description=d.get("description"),
-                            source=normalize_source_name(d.get("source", "InterPro")),
-                            accession=d.get("accession"),
-                            start=d.get("start"),
-                            end=d.get("end"),
-                            data_provider=d.get("data_provider", "InterPro")
-                        )
-                        db.add(domain)
-            except Exception as e:
-                print(f"Error fetching InterPro domains for {fusion.gene_a_symbol}: {e}")
+            if interpro_client:
+                try:
+                    interpro_domains = await interpro_client.get_comprehensive_domains(
+                        fusion.gene_a_symbol,
+                        protein_length=protein_a.length
+                    )
+                    for d in interpro_domains:
+                        if d.get("start") and d.get("end"):
+                            domain = Domain(
+                                protein_id=protein_a.id,
+                                name=d.get("name", "Unknown"),
+                                description=d.get("description"),
+                                source=normalize_source_name(d.get("source", "InterPro")),
+                                accession=d.get("accession"),
+                                start=d.get("start"),
+                                end=d.get("end"),
+                                data_provider=d.get("data_provider", "InterPro")
+                            )
+                            db.add(domain)
+                except Exception as e:
+                    logger.error(f"Error fetching InterPro domains for {fusion.gene_a_symbol}: {e}")
 
-            await db.commit()
+            try:
+                await db.commit()
+            except Exception as e:
+                logger.error(f"Error committing gene A domains: {e}")
+                await db.rollback()
 
             # Get updated domains
-            result = await db.execute(
-                select(Domain).where(Domain.protein_id == protein_a.id)
-            )
-            domains = result.scalars().all()
+            try:
+                result = await db.execute(
+                    select(Domain).where(Domain.protein_id == protein_a.id)
+                )
+                domains = result.scalars().all()
 
-            for d in domains:
-                status = _determine_domain_status(d.start, d.end, fusion.aa_breakpoint_a, "5prime")
-                is_kinase = any(kw in (d.name or "") for kw in ["kinase", "Kinase", "Pkinase", "TyrKc", "S_TKc", "STYKc"])
-                updated_domains_a.append({
-                    "name": d.name or "Unknown",
-                    "description": d.description,
-                    "source": normalize_source_name(d.source or "Unknown"),
-                    "accession": d.accession,
-                    "start": d.start or 0,
-                    "end": d.end or 0,
-                    "score": d.score,
-                    "status": status,
-                    "is_kinase": is_kinase,
-                    "data_provider": d.data_provider
-                })
+                for d in domains:
+                    status = _determine_domain_status(d.start, d.end, fusion.aa_breakpoint_a, "5prime")
+                    is_kinase = any(kw in (d.name or "") for kw in ["kinase", "Kinase", "Pkinase", "TyrKc", "S_TKc", "STYKc"])
+                    updated_domains_a.append({
+                        "name": d.name or "Unknown",
+                        "description": d.description,
+                        "source": normalize_source_name(d.source or "Unknown"),
+                        "accession": d.accession,
+                        "start": d.start or 0,
+                        "end": d.end or 0,
+                        "score": d.score,
+                        "status": status,
+                        "is_kinase": is_kinase,
+                        "data_provider": d.data_provider
+                    })
+            except Exception as e:
+                logger.error(f"Error fetching updated domains for gene A: {e}")
 
     # Refresh domains for gene B
     if fusion.transcript_b_id:
@@ -1308,72 +1330,94 @@ async def refresh_fusion_domains(
 
             # Fetch from Ensembl
             ensembl = get_ensembl_client(fusion.genome_build or "hg38")
-            features = await ensembl.get_protein_features(protein_b.id)
-            for feat in features:
-                domain = Domain(
-                    protein_id=protein_b.id,
-                    name=feat.get("description", feat.get("type", "Unknown")),
-                    description=feat.get("description"),
-                    source=normalize_source_name(feat.get("type", "Unknown")),
-                    accession=feat.get("id"),
-                    start=feat.get("start"),
-                    end=feat.get("end"),
-                    score=feat.get("score"),
-                    data_provider="Ensembl"
-                )
-                db.add(domain)
+            try:
+                features = await ensembl.get_protein_features(protein_b.id)
+                for feat in features:
+                    domain = Domain(
+                        protein_id=protein_b.id,
+                        name=feat.get("description", feat.get("type", "Unknown")),
+                        description=feat.get("description"),
+                        source=normalize_source_name(feat.get("type", "Unknown")),
+                        accession=feat.get("id"),
+                        start=feat.get("start"),
+                        end=feat.get("end"),
+                        score=feat.get("score"),
+                        data_provider="Ensembl"
+                    )
+                    db.add(domain)
+            except Exception as e:
+                logger.error(f"Error fetching Ensembl domains for {fusion.gene_b_symbol} (protein {protein_b.id}): {e}")
 
             # Fetch from InterPro
-            try:
-                interpro_domains = await interpro_client.get_comprehensive_domains(
-                    fusion.gene_b_symbol,
-                    protein_length=protein_b.length
-                )
-                for d in interpro_domains:
-                    if d.get("start") and d.get("end"):
-                        domain = Domain(
-                            protein_id=protein_b.id,
-                            name=d.get("name", "Unknown"),
-                            description=d.get("description"),
-                            source=normalize_source_name(d.get("source", "InterPro")),
-                            accession=d.get("accession"),
-                            start=d.get("start"),
-                            end=d.get("end"),
-                            data_provider=d.get("data_provider", "InterPro")
-                        )
-                        db.add(domain)
-            except Exception as e:
-                print(f"Error fetching InterPro domains for {fusion.gene_b_symbol}: {e}")
+            if interpro_client:
+                try:
+                    interpro_domains = await interpro_client.get_comprehensive_domains(
+                        fusion.gene_b_symbol,
+                        protein_length=protein_b.length
+                    )
+                    for d in interpro_domains:
+                        if d.get("start") and d.get("end"):
+                            domain = Domain(
+                                protein_id=protein_b.id,
+                                name=d.get("name", "Unknown"),
+                                description=d.get("description"),
+                                source=normalize_source_name(d.get("source", "InterPro")),
+                                accession=d.get("accession"),
+                                start=d.get("start"),
+                                end=d.get("end"),
+                                data_provider=d.get("data_provider", "InterPro")
+                            )
+                            db.add(domain)
+                except Exception as e:
+                    logger.error(f"Error fetching InterPro domains for {fusion.gene_b_symbol}: {e}")
 
-            await db.commit()
+            try:
+                await db.commit()
+            except Exception as e:
+                logger.error(f"Error committing gene B domains: {e}")
+                await db.rollback()
 
             # Get updated domains
-            result = await db.execute(
-                select(Domain).where(Domain.protein_id == protein_b.id)
-            )
-            domains = result.scalars().all()
+            try:
+                result = await db.execute(
+                    select(Domain).where(Domain.protein_id == protein_b.id)
+                )
+                domains = result.scalars().all()
 
-            for d in domains:
-                status = _determine_domain_status(d.start, d.end, fusion.aa_breakpoint_b, "3prime")
-                is_kinase = any(kw in (d.name or "") for kw in ["kinase", "Kinase", "Pkinase", "TyrKc", "S_TKc", "STYKc"])
-                updated_domains_b.append({
-                    "name": d.name or "Unknown",
-                    "description": d.description,
-                    "source": normalize_source_name(d.source or "Unknown"),
-                    "accession": d.accession,
-                    "start": d.start or 0,
-                    "end": d.end or 0,
-                    "score": d.score,
-                    "status": status,
-                    "is_kinase": is_kinase,
-                    "data_provider": d.data_provider
-                })
+                for d in domains:
+                    status = _determine_domain_status(d.start, d.end, fusion.aa_breakpoint_b, "3prime")
+                    is_kinase = any(kw in (d.name or "") for kw in ["kinase", "Kinase", "Pkinase", "TyrKc", "S_TKc", "STYKc"])
+                    updated_domains_b.append({
+                        "name": d.name or "Unknown",
+                        "description": d.description,
+                        "source": normalize_source_name(d.source or "Unknown"),
+                        "accession": d.accession,
+                        "start": d.start or 0,
+                        "end": d.end or 0,
+                        "score": d.score,
+                        "status": status,
+                        "is_kinase": is_kinase,
+                        "data_provider": d.data_provider
+                    })
+            except Exception as e:
+                logger.error(f"Error fetching updated domains for gene B: {e}")
 
     # Update fusion with new domains
-    fusion.domains_a = updated_domains_a
-    fusion.domains_b = updated_domains_b
-    await db.commit()
-    await db.refresh(fusion)
+    try:
+        fusion.domains_a = updated_domains_a
+        fusion.domains_b = updated_domains_b
+        await db.commit()
+        await db.refresh(fusion)
+    except Exception as e:
+        logger.error(f"Error updating fusion domains: {e}")
+        await db.rollback()
+        # Re-fetch fusion without new domains
+        result = await db.execute(
+            select(Fusion)
+            .where(Fusion.session_id == session_id)
+            .where(Fusion.id == fusion_id)
+        )
+        fusion = result.scalar_one_or_none()
 
     return await _fusion_to_detail_response(fusion)
 

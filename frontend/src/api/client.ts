@@ -253,6 +253,7 @@ export interface SessionDomainInfo {
   source: string
   status: string
   is_kinase: boolean
+  data_provider?: string
 }
 
 export async function getSessionDomainsInfo(sessionId: string): Promise<SessionDomainInfo[]> {
