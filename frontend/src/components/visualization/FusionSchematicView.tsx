@@ -95,7 +95,13 @@ export default function FusionSchematicView({ data, domainColorMap, filters, onS
     const providerMatch = dataProviders.length === 0 ||
       Boolean(domain.data_provider && dataProviders.includes(domain.data_provider))
 
-    return sourceMatch && providerMatch
+    // Exclude specific data providers (e.g., CDD)
+    const excludeProviders = filters?.excludeDataProviders || []
+    const notExcluded = excludeProviders.length === 0 ||
+      !domain.data_provider ||
+      !excludeProviders.includes(domain.data_provider)
+
+    return sourceMatch && providerMatch && notExcluded
   }
 
   const getDomainColor = (name: string, source: string, isKinase: boolean): string => {

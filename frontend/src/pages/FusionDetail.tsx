@@ -199,13 +199,12 @@ export default function FusionDetail() {
     })
   }, [])
 
-  // Update dataProviders filter when includeCDD changes
+  // Update excludeDataProviders filter when includeCDD changes
   const effectiveFilters = useMemo((): DomainFilters => {
     if (includeCDD) {
-      return { ...domainFilters, dataProviders: [] }  // Empty = show all
+      return { ...domainFilters, excludeDataProviders: [] }  // Empty = show all
     } else {
-      // Exclude CDD by setting dataProviders to all non-CDD providers
-      return { ...domainFilters, dataProviders: ['InterPro', 'UniProt', 'Ensembl'] }
+      return { ...domainFilters, excludeDataProviders: ['CDD'] }  // Exclude CDD domains
     }
   }, [domainFilters, includeCDD])
 
