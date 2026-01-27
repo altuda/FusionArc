@@ -5,7 +5,7 @@ import Button from '../common/Button'
 import { FusionManualInput, GenomeBuild, createBatchFusions } from '../../api/client'
 
 interface ManualInputProps {
-  onSubmit: (data: FusionManualInput) => void
+  onSubmit: (data: FusionManualInput) => Promise<void>
   isLoading?: boolean
   sessionId?: string  // If provided, add fusions to this session instead of creating new
 }
@@ -163,6 +163,8 @@ export default function ManualInput({ onSubmit, isLoading, sessionId }: ManualIn
         const session = await createBatchFusions(batchContent, sessionId)
         // Invalidate queries to refresh fusion list
         await queryClient.invalidateQueries({ queryKey: ['fusions'] })
+        // Clear text input after successful submission
+        setTextInput('')
         navigate(`/session/${session.id}`)
       } catch (error) {
         setTextError(error instanceof Error ? error.message : 'Failed to create fusions')
@@ -189,7 +191,23 @@ export default function ManualInput({ onSubmit, isLoading, sessionId }: ManualIn
     }
 
     setErrors({})
-    onSubmit(data)
+    try {
+      await onSubmit(data)
+      // Clear form after successful submission
+      setFormData({
+        gene_a_symbol: '',
+        gene_a_chr: '',
+        gene_a_pos: '',
+        gene_a_strand: '+',
+        gene_b_symbol: '',
+        gene_b_chr: '',
+        gene_b_pos: '',
+        gene_b_strand: '+',
+      })
+      setTextInput('')
+    } catch {
+      // Error is already handled by parent
+    }
   }
 
   const handleFormChange = (field: string, value: string) => {

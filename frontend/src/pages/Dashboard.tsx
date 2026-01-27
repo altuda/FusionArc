@@ -91,6 +91,7 @@ export default function Dashboard() {
       navigate(`/session/${result.session_id}/fusion/${result.id}`)
     } catch (error) {
       console.error('Failed to create fusion:', error)
+      throw error  // Re-throw so ManualInput knows submission failed
     }
   }
 
