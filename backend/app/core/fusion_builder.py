@@ -422,6 +422,7 @@ class FusionBuilder:
                         "id": domain.get("accession"),
                         "start": domain.get("start"),
                         "end": domain.get("end"),
+                        "data_provider": domain.get("data_provider", "InterPro"),
                     })
                 logger.info(f"Cached {len(interpro_domains)} InterPro domains for {gene_symbol}")
             except Exception as e:
@@ -469,6 +470,7 @@ class FusionBuilder:
             start=start,
             end=end,
             score=feat_data.get("score"),  # E-value or hit score
+            data_provider=feat_data.get("data_provider", "Ensembl"),
             cached_at=datetime.utcnow()
         )
 

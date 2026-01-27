@@ -237,9 +237,10 @@ class InterProClient:
                                 break
 
                         # Look up domain metadata
+                        # Use subtitle (full description) for name, fall back to title (short code)
                         meta = pssmid_lookup.get(pssmid, {}) if pssmid else {}
-                        name = meta.get("title") or acc
-                        description = meta.get("subtitle") or meta.get("abstract") or f"CDD hit: {acc}"
+                        name = meta.get("subtitle") or meta.get("title") or acc
+                        description = meta.get("abstract") or meta.get("subtitle") or f"CDD hit: {acc}"
 
                         domains.append({
                             "name": name,

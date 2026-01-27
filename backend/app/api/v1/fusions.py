@@ -1289,7 +1289,8 @@ async def refresh_fusion_domains(
                     "end": d.end or 0,
                     "score": d.score,
                     "status": status,
-                    "is_kinase": is_kinase
+                    "is_kinase": is_kinase,
+                    "data_provider": d.data_provider
                 })
 
     # Refresh domains for gene B
@@ -1364,7 +1365,8 @@ async def refresh_fusion_domains(
                     "end": d.end or 0,
                     "score": d.score,
                     "status": status,
-                    "is_kinase": is_kinase
+                    "is_kinase": is_kinase,
+                    "data_provider": d.data_provider
                 })
 
     # Update fusion with new domains

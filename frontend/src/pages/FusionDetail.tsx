@@ -7,7 +7,6 @@ import LoadingSpinner from '../components/common/LoadingSpinner'
 import StatusBadge, { getFrameStatus, getKinaseStatus } from '../components/common/StatusBadge'
 import ViewModeSelector from '../components/common/ViewModeSelector'
 import DatabaseFilter from '../components/common/DatabaseFilter'
-import DataProviderFilter from '../components/common/DataProviderFilter'
 import ProteinSchematic, { DomainFilters, ColorMode, ViewMode } from '../components/visualization/ProteinSchematic'
 import SequenceView from '../components/visualization/SequenceView'
 import DomainDetailPanel from '../components/visualization/DomainDetailPanel'
@@ -38,9 +37,10 @@ export default function FusionDetail() {
   // Domain filters - default to 'domain' for consistent colors across fusions
   const [domainFilters, setDomainFilters] = useState<DomainFilters>({
     sources: [],
-    dataProviders: [],
+    dataProviders: [],  // Empty means show all; ['CDD'] would exclude CDD
     colorMode: 'domain',
   })
+  const [includeCDD, setIncludeCDD] = useState(true)
 
   const { data: fusion, isLoading: isLoadingFusion, error: fusionError } = useFusionDetail(sessionId, fusionId)
   const { data: vizData, isLoading: isLoadingViz } = useVisualizationData(sessionId, fusionId)
@@ -163,11 +163,15 @@ export default function FusionDetail() {
     return map
   }, [fusion, useBatchColors, sessionId, sessionDomains]) // sessionDomains triggers re-render when loaded
 
-  // Get all domains for the legend
+  // Get all domains for the legend (filtered by CDD toggle)
   const allDomains = useMemo(() => {
     if (!fusion) return []
-    return [...(fusion.domains_a || []), ...(fusion.domains_b || [])]
-  }, [fusion])
+    const domains = [...(fusion.domains_a || []), ...(fusion.domains_b || [])]
+    if (!includeCDD) {
+      return domains.filter(d => d.data_provider !== 'CDD')
+    }
+    return domains
+  }, [fusion, includeCDD])
 
   // Generate legend items respecting the source filter
   const legendItems = useMemo(() => {
@@ -183,28 +187,6 @@ export default function FusionDetail() {
     return Array.from(sources).sort()
   }, [fusion])
 
-  // Get available data providers from domains
-  const availableDataProviders = useMemo(() => {
-    if (!fusion) return []
-    const providers = new Set<string>()
-    fusion.domains_a?.forEach(d => {
-      if (d.data_provider) providers.add(d.data_provider)
-    })
-    fusion.domains_b?.forEach(d => {
-      if (d.data_provider) providers.add(d.data_provider)
-    })
-    // Sort with preferred order: InterPro, UniProt, CDD, Ensembl
-    const order = ['InterPro', 'UniProt', 'CDD', 'Ensembl']
-    return Array.from(providers).sort((a, b) => {
-      const idxA = order.indexOf(a)
-      const idxB = order.indexOf(b)
-      if (idxA === -1 && idxB === -1) return a.localeCompare(b)
-      if (idxA === -1) return 1
-      if (idxB === -1) return -1
-      return idxA - idxB
-    })
-  }, [fusion])
-
   const toggleSourceFilter = useCallback((source: string) => {
     setDomainFilters(prev => {
       const currentSources = prev.sources || []
@@ -217,17 +199,15 @@ export default function FusionDetail() {
     })
   }, [])
 
-  const toggleDataProviderFilter = useCallback((provider: string) => {
-    setDomainFilters(prev => {
-      const currentProviders = prev.dataProviders || []
-      return {
-        ...prev,
-        dataProviders: currentProviders.includes(provider)
-          ? currentProviders.filter(p => p !== provider)
-          : [...currentProviders, provider]
-      }
-    })
-  }, [])
+  // Update dataProviders filter when includeCDD changes
+  const effectiveFilters = useMemo((): DomainFilters => {
+    if (includeCDD) {
+      return { ...domainFilters, dataProviders: [] }  // Empty = show all
+    } else {
+      // Exclude CDD by setting dataProviders to all non-CDD providers
+      return { ...domainFilters, dataProviders: ['InterPro', 'UniProt', 'Ensembl'] }
+    }
+  }, [domainFilters, includeCDD])
 
   if (isLoadingFusion || isLoadingViz) {
     return (
@@ -429,16 +409,19 @@ export default function FusionDetail() {
                     </span>
                   </label>
                 )}
+
+                <label className="flex items-center space-x-2 text-gray-600 dark:text-gray-400" title="Include domain predictions from NCBI CDD (Conserved Domain Database)">
+                  <input
+                    type="checkbox"
+                    checked={includeCDD}
+                    onChange={(e) => setIncludeCDD(e.target.checked)}
+                    className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                  />
+                  <span>Include CDD</span>
+                </label>
               </div>
 
-              {/* Row 3: Data provider filter */}
-              <DataProviderFilter
-                providers={availableDataProviders}
-                selectedProviders={domainFilters.dataProviders || []}
-                onToggle={toggleDataProviderFilter}
-              />
-
-              {/* Row 4: Database filter */}
+              {/* Row 3: Database filter */}
               <DatabaseFilter
                 sources={availableSources}
                 selectedSources={domainFilters.sources || []}
@@ -449,7 +432,7 @@ export default function FusionDetail() {
           <CardBody>
             <ProteinSchematic
               data={vizData}
-              filters={domainFilters}
+              filters={effectiveFilters}
               showStrandOrientation={showStrandOrientation}
               onSvgReady={svgHandlers.schematic}
               domainColorMap={domainColorMap}
