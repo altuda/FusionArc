@@ -3,6 +3,7 @@ import * as d3 from 'd3'
 import { VisualizationData, DomainInfo } from '../../api/client'
 import { useTheme } from '../../context/ThemeContext'
 import { DomainColorMap } from '../../utils/domainColors'
+import { shouldShowDomain as shouldShowDomainFilter } from '../../utils/domainFilters'
 import FusionSchematicView from './FusionSchematicView'
 
 // Generate URL to database entry based on source and accession
@@ -140,22 +141,7 @@ export default function ProteinSchematic({ data, filters = defaultFilters, showS
     }
 
     const shouldShowDomain = (domain: DomainInfo): boolean => {
-      // Filter by database source (Pfam, SMART, etc.)
-      const sources = filters.sources || []
-      const sourceMatch = sources.length === 0 || sources.includes(domain.source)
-
-      // Filter by data provider (InterPro, CDD, etc.)
-      const dataProviders = filters.dataProviders || []
-      const providerMatch = dataProviders.length === 0 ||
-        Boolean(domain.data_provider && dataProviders.includes(domain.data_provider))
-
-      // Exclude specific data providers (e.g., CDD)
-      const excludeProviders = filters.excludeDataProviders || []
-      const notExcluded = excludeProviders.length === 0 ||
-        !domain.data_provider ||
-        !excludeProviders.includes(domain.data_provider)
-
-      return sourceMatch && providerMatch && notExcluded
+      return shouldShowDomainFilter(domain, filters)
     }
 
     const drawDomainRect = (

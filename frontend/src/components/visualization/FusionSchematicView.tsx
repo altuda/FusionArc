@@ -3,6 +3,7 @@ import * as d3 from 'd3'
 import { VisualizationData } from '../../api/client'
 import { useTheme } from '../../context/ThemeContext'
 import { DomainColorMap } from '../../utils/domainColors'
+import { shouldShowDomain as shouldShowDomainFilter } from '../../utils/domainFilters'
 import { DomainFilters } from './ProteinSchematic'
 
 // Generate URL to database entry
@@ -86,22 +87,7 @@ export default function FusionSchematicView({ data, domainColorMap, filters, onS
   }, [data, domainColorMap])
 
   const shouldShowDomain = (domain: { source: string; data_provider?: string }): boolean => {
-    // Filter by database source
-    const sources = filters?.sources || []
-    const sourceMatch = sources.length === 0 || sources.includes(domain.source)
-
-    // Filter by data provider
-    const dataProviders = filters?.dataProviders || []
-    const providerMatch = dataProviders.length === 0 ||
-      Boolean(domain.data_provider && dataProviders.includes(domain.data_provider))
-
-    // Exclude specific data providers (e.g., CDD)
-    const excludeProviders = filters?.excludeDataProviders || []
-    const notExcluded = excludeProviders.length === 0 ||
-      !domain.data_provider ||
-      !excludeProviders.includes(domain.data_provider)
-
-    return sourceMatch && providerMatch && notExcluded
+    return shouldShowDomainFilter(domain, filters)
   }
 
   const getDomainColor = (name: string, source: string, isKinase: boolean): string => {

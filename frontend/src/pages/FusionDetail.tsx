@@ -18,6 +18,7 @@ import DomainColorLegend, { getLegendItems, FeatureTypeLegend, SourceLegend } fr
 import { useFusionDetail, useVisualizationData, useFusionMutations } from '../hooks/useFusions'
 import { refreshFusionDomains, getSessionDomains, MutationInfo, MutationType } from '../api/client'
 import { DomainColorMap } from '../utils/domainColors'
+import { computeEffectiveFilters } from '../utils/domainFilters'
 
 // Cache for session-level color maps (persists across navigation within session)
 const sessionColorMapCache = new Map<string, DomainColorMap>()
@@ -201,11 +202,7 @@ export default function FusionDetail() {
 
   // Update excludeDataProviders filter when includeCDD changes
   const effectiveFilters = useMemo((): DomainFilters => {
-    if (includeCDD) {
-      return { ...domainFilters, excludeDataProviders: [] }  // Empty = show all
-    } else {
-      return { ...domainFilters, excludeDataProviders: ['CDD'] }  // Exclude CDD domains
-    }
+    return computeEffectiveFilters(domainFilters, includeCDD)
   }, [domainFilters, includeCDD])
 
   if (isLoadingFusion || isLoadingViz) {
