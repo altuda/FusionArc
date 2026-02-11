@@ -1,36 +1,26 @@
-import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useState, useMemo, useCallback, useEffect, useRef, memo } from 'react'
+import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
+import { Virtuoso } from 'react-virtuoso'
 import Card, { CardHeader, CardBody } from '../components/common/Card'
 import Button from '../components/common/Button'
 import LoadingSpinner from '../components/common/LoadingSpinner'
 import StatusBadge, { getFrameStatus, getKinaseStatus } from '../components/common/StatusBadge'
 import ViewModeSelector from '../components/common/ViewModeSelector'
-import DatabaseFilter from '../components/common/DatabaseFilter'
+import DatabaseFilter, { getUniqueSourceProviderPairs, SourceProviderPair } from '../components/common/DatabaseFilter'
 import ProteinSchematic, { DomainFilters, ColorMode, ViewMode } from '../components/visualization/ProteinSchematic'
 import FusionTranscriptView from '../components/visualization/FusionTranscriptView'
 import MultiLevelView from '../components/visualization/MultiLevelView'
-import DomainColorLegend, { LegendItem, getLegendItems, FeatureTypeLegend, SourceLegend } from '../components/visualization/DomainColorLegend'
+import DomainColorLegend, { getLegendItems, FeatureTypeLegend, SourceLegend, GenomicLocationInfo } from '../components/visualization/DomainColorLegend'
 import ExportButtons from '../components/visualization/ExportButtons'
 import { useFusions, useVisualizationData } from '../hooks/useFusions'
-import { getSessionDomains, getSessionDomainSources, refreshFusionDomains, FusionResponse, DomainInfo } from '../api/client'
+import { getSessionDomains, refreshFusionDomains, FusionResponse, DomainInfo } from '../api/client'
 import { DomainColorMap } from '../utils/domainColors'
-import { computeEffectiveFilters } from '../utils/domainFilters'
+import { shouldShowDomain } from '../utils/domainFilters'
 
 type ViewTab = 'schematic' | 'transcript' | 'multilevel'
 
-// Single fusion card component
-function FusionCard({
-  fusion,
-  sessionId,
-  activeTab,
-  viewMode,
-  domainFilters,
-  showStrandOrientation,
-  domainColorMap,
-  legendItems,
-  onDomainsLoaded,
-}: {
+interface FusionCardProps {
   fusion: FusionResponse
   sessionId: string
   activeTab: ViewTab
@@ -38,9 +28,24 @@ function FusionCard({
   domainFilters: DomainFilters
   showStrandOrientation: boolean
   domainColorMap: DomainColorMap
-  legendItems: LegendItem[]
   onDomainsLoaded?: (fusionId: string, domains: DomainInfo[]) => void
-}) {
+  isSelected?: boolean
+  onToggleSelect?: (fusionId: string) => void
+}
+
+// Single fusion card component - wrapped with React.memo for performance
+const FusionCard = memo(function FusionCard({
+  fusion,
+  sessionId,
+  activeTab,
+  viewMode,
+  domainFilters,
+  showStrandOrientation,
+  domainColorMap,
+  onDomainsLoaded,
+  isSelected,
+  onToggleSelect,
+}: FusionCardProps) {
   const { data: vizData, isLoading } = useVisualizationData(sessionId, fusion.id)
 
   // Report domains when visualization data loads
@@ -50,7 +55,45 @@ function FusionCard({
       onDomainsLoaded(fusion.id, allDomains)
     }
   }, [vizData, fusion.id, onDomainsLoaded])
+
+  // Compute per-fusion legend items (only domains from this fusion, not the whole batch)
+  const legendItems = useMemo(() => {
+    if (!vizData) return []
+    const fusionDomains = [...vizData.gene_a.domains, ...vizData.gene_b.domains]
+      .filter(d => shouldShowDomain(d, domainFilters))
+    if (fusionDomains.length === 0) return []
+    return getLegendItems(
+      fusionDomains,
+      domainColorMap,
+      [],
+      viewMode === 'stacked' || viewMode === 'full'
+    )
+  }, [vizData, domainFilters, domainColorMap, viewMode])
+
   const [svgContent, setSvgContent] = useState<string | null>(null)
+
+  // Create genomic location info for exports
+  const genomicLocation = useMemo((): GenomicLocationInfo | undefined => {
+    if (!vizData) return undefined
+
+    return {
+      geneA: {
+        symbol: fusion.gene_a_symbol,
+        chromosome: vizData.gene_a.chromosome || fusion.gene_a_chromosome,
+        breakpoint: vizData.gene_a.breakpoint || fusion.gene_a_breakpoint,
+        strand: vizData.gene_a.strand,
+        breakpointLocation: vizData.gene_a.breakpoint_location
+      },
+      geneB: {
+        symbol: fusion.gene_b_symbol,
+        chromosome: vizData.gene_b.chromosome || fusion.gene_b_chromosome,
+        breakpoint: vizData.gene_b.breakpoint || fusion.gene_b_breakpoint,
+        strand: vizData.gene_b.strand,
+        breakpointLocation: vizData.gene_b.breakpoint_location
+      },
+      genomeBuild: fusion.genome_build as 'hg19' | 'hg38' | undefined
+    }
+  }, [fusion, vizData])
 
   const fusionName = `${fusion.gene_a_symbol}--${fusion.gene_b_symbol}`
   const frameStatus = getFrameStatus(fusion.is_in_frame)
@@ -86,6 +129,15 @@ function FusionCard({
       <CardHeader>
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-4">
+            {onToggleSelect && (
+              <input
+                type="checkbox"
+                checked={isSelected || false}
+                onChange={() => onToggleSelect(fusion.id)}
+                className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                title="Select for comparison"
+              />
+            )}
             <h2 className="text-xl font-bold text-gray-900 dark:text-white">
               <span style={{ color: '#3B82F6' }}>{fusion.gene_a_symbol}</span>
               <span className="text-gray-400 mx-2">--</span>
@@ -107,6 +159,7 @@ function FusionCard({
               sequence={null}
               fusionName={fusionName}
               legendItems={legendItems}
+              genomicLocation={genomicLocation}
             />
             <Link
               to={`/session/${sessionId}/fusion/${fusion.id}`}
@@ -145,47 +198,53 @@ function FusionCard({
       </CardBody>
     </Card>
   )
-}
+}, (prevProps, nextProps) => {
+  // Custom comparison function for React.memo
+  // Only re-render if these specific props change
+  return (
+    prevProps.fusion.id === nextProps.fusion.id &&
+    prevProps.activeTab === nextProps.activeTab &&
+    prevProps.viewMode === nextProps.viewMode &&
+    prevProps.showStrandOrientation === nextProps.showStrandOrientation &&
+    prevProps.domainFilters === nextProps.domainFilters &&
+    prevProps.domainColorMap === nextProps.domainColorMap &&
+    prevProps.isSelected === nextProps.isSelected
+  )
+})
 
 export default function BatchView() {
   const { sessionId } = useParams<{ sessionId: string }>()
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [activeTab, setActiveTab] = useState<ViewTab>('schematic')
+  const [selectedForCompare, setSelectedForCompare] = useState<Set<string>>(new Set())
   const [viewMode, setViewMode] = useState<ViewMode>('fusion')
   const [showStrandOrientation, setShowStrandOrientation] = useState(false)
   const [sessionDomains, setSessionDomains] = useState<string[] | null>(null)
-  const [availableSources, setAvailableSources] = useState<string[]>([])
   const [isLoadingDomains, setIsLoadingDomains] = useState(false)
   const [isRefreshingDomains, setIsRefreshingDomains] = useState(false)
   const [aggregatedDomains, setAggregatedDomains] = useState<DomainInfo[]>([])
   const fusionDomainsRef = useRef<Map<string, DomainInfo[]>>(new Map())
 
   const [domainFilters, setDomainFilters] = useState<DomainFilters>({
-    sources: [],
-    dataProviders: [],
+    sourceProviderKeys: [],  // Empty means show all
     colorMode: 'domain',
   })
-  const [includeCDD, setIncludeCDD] = useState(true)
   const [useBatchConsistentColors, setUseBatchConsistentColors] = useState(true)
 
   const { data: fusionsData, isLoading: isLoadingFusions } = useFusions(sessionId)
 
-  // Load session domains and sources for consistent colors across all fusions
+  // Load session domains for consistent colors across all fusions
   const loadSessionData = useCallback(async () => {
     if (!sessionId || sessionDomains !== null) return
 
     setIsLoadingDomains(true)
     try {
-      const [domains, sources] = await Promise.all([
-        getSessionDomains(sessionId),
-        getSessionDomainSources(sessionId)
-      ])
+      const domains = await getSessionDomains(sessionId)
       setSessionDomains(domains)
-      setAvailableSources(sources)
     } catch (error) {
       console.error('Failed to load session data:', error)
       setSessionDomains([])
-      setAvailableSources([])
     } finally {
       setIsLoadingDomains(false)
     }
@@ -196,15 +255,15 @@ export default function BatchView() {
     loadSessionData()
   }, [loadSessionData])
 
-  // Toggle source filter
-  const toggleSourceFilter = useCallback((source: string) => {
+  // Toggle source-provider filter
+  const toggleSourceFilter = useCallback((key: string) => {
     setDomainFilters(prev => {
-      const currentSources = prev.sources || []
+      const currentKeys = prev.sourceProviderKeys || []
       return {
         ...prev,
-        sources: currentSources.includes(source)
-          ? currentSources.filter(s => s !== source)
-          : [...currentSources, source]
+        sourceProviderKeys: currentKeys.includes(key)
+          ? currentKeys.filter(k => k !== key)
+          : [...currentKeys, key]
       }
     })
   }, [])
@@ -241,7 +300,6 @@ export default function BatchView() {
       })
       // Reset session domains and aggregated domains to trigger reload
       setSessionDomains(null)
-      setAvailableSources([])
       setAggregatedDomains([])
       fusionDomainsRef.current.clear()
     } catch (error) {
@@ -250,6 +308,25 @@ export default function BatchView() {
       setIsRefreshingDomains(false)
     }
   }, [sessionId, fusionsData, queryClient])
+
+  // Toggle fusion selection for comparison
+  const toggleFusionSelection = useCallback((fusionId: string) => {
+    setSelectedForCompare(prev => {
+      const next = new Set(prev)
+      if (next.has(fusionId)) {
+        next.delete(fusionId)
+      } else {
+        // Limit to 2 selections
+        if (next.size >= 2) {
+          // Remove the oldest selection
+          const firstId = next.values().next().value as string
+          next.delete(firstId)
+        }
+        next.add(fusionId)
+      }
+      return next
+    })
+  }, [])
 
   // Create shared domain color map
   const domainColorMap = useMemo(() => {
@@ -260,30 +337,15 @@ export default function BatchView() {
     return map
   }, [sessionDomains, useBatchConsistentColors])
 
-  // Compute effective filters based on includeCDD toggle
-  const effectiveFilters = useMemo((): DomainFilters => {
-    return computeEffectiveFilters(domainFilters, includeCDD)
-  }, [domainFilters, includeCDD])
+  // Get available source-provider pairs from aggregated domains
+  const availableSourcePairs = useMemo((): SourceProviderPair[] => {
+    return getUniqueSourceProviderPairs(aggregatedDomains)
+  }, [aggregatedDomains])
 
-  // Filter aggregated domains based on includeCDD for legend
+  // Filter aggregated domains based on selected source-provider pairs
   const filteredAggregatedDomains = useMemo(() => {
-    if (!includeCDD) {
-      return aggregatedDomains.filter(d => d.data_provider !== 'CDD')
-    }
-    return aggregatedDomains
-  }, [aggregatedDomains, includeCDD])
-
-  // Create legend items for exports (using aggregated domain info from visualization data)
-  const legendItems = useMemo(() => {
-    if (filteredAggregatedDomains.length === 0) return []
-
-    return getLegendItems(
-      filteredAggregatedDomains,
-      domainColorMap,
-      domainFilters.sources || [],
-      viewMode === 'stacked' || viewMode === 'full'
-    )
-  }, [filteredAggregatedDomains, domainColorMap, domainFilters.sources, viewMode])
+    return aggregatedDomains.filter(d => shouldShowDomain(d, domainFilters))
+  }, [aggregatedDomains, domainFilters])
 
   if (isLoadingFusions) {
     return (
@@ -338,7 +400,23 @@ export default function BatchView() {
                 {fusionsData.total} fusions with consistent domain coloring
               </p>
             </div>
-            <div className="mt-4 lg:mt-0">
+            <div className="mt-4 lg:mt-0 flex items-center gap-3">
+              {selectedForCompare.size > 0 && (
+                <span className="text-sm text-primary-600 dark:text-primary-400">
+                  {selectedForCompare.size} selected
+                </span>
+              )}
+              {selectedForCompare.size === 2 && (
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    const ids = Array.from(selectedForCompare)
+                    navigate(`/session/${sessionId}/compare/${ids[0]}/${ids[1]}`)
+                  }}
+                >
+                  Compare Selected
+                </Button>
+              )}
               <Button
                 variant="secondary"
                 size="sm"
@@ -354,7 +432,7 @@ export default function BatchView() {
                 ) : (
                   <span className="flex items-center">
                     <svg className="w-4 h-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                     </svg>
                     Refresh All Domains
                   </span>
@@ -441,22 +519,12 @@ export default function BatchView() {
                       <span>Batch consistent colors</span>
                     </label>
                   )}
-
-                  <label className="flex items-center space-x-2 text-gray-600 dark:text-gray-400 text-sm" title="Include domain predictions from NCBI CDD (Conserved Domain Database)">
-                    <input
-                      type="checkbox"
-                      checked={includeCDD}
-                      onChange={(e) => setIncludeCDD(e.target.checked)}
-                      className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                    />
-                    <span>Include CDD</span>
-                  </label>
                 </div>
 
-                {/* Row 2: Database filter */}
+                {/* Row 2: Database filter with source-provider pairs */}
                 <DatabaseFilter
-                  sources={availableSources}
-                  selectedSources={domainFilters.sources || []}
+                  pairs={availableSourcePairs}
+                  selectedKeys={domainFilters.sourceProviderKeys || []}
                   onToggle={toggleSourceFilter}
                 />
               </div>
@@ -479,7 +547,6 @@ export default function BatchView() {
             <DomainColorLegend
               domains={filteredAggregatedDomains}
               colorMap={domainColorMap}
-              sourceFilter={domainFilters.sources || []}
               showLost={viewMode === 'stacked' || viewMode === 'full'}
               compact
             />
@@ -488,32 +555,59 @@ export default function BatchView() {
             <FeatureTypeLegend
               compact
               domains={filteredAggregatedDomains}
-              sourceFilter={domainFilters.sources || []}
             />
           )}
           {domainFilters.colorMode === 'source' && (
-            <SourceLegend compact sources={availableSources} />
+            <SourceLegend compact sources={availableSourcePairs.map(p => p.source)} />
           )}
         </CardBody>
       </Card>
 
-      {/* Fusion Cards */}
-      <div className="space-y-6">
-        {fusionsData.fusions.map((fusion) => (
-          <FusionCard
-            key={fusion.id}
-            fusion={fusion}
-            sessionId={sessionId!}
-            activeTab={activeTab}
-            viewMode={viewMode}
-            domainFilters={effectiveFilters}
-            showStrandOrientation={showStrandOrientation}
-            domainColorMap={domainColorMap}
-            legendItems={legendItems}
-            onDomainsLoaded={handleDomainsLoaded}
-          />
-        ))}
-      </div>
+      {/* Fusion Cards - Use virtualization for large batches (>10 fusions) */}
+      {fusionsData.fusions.length > 10 ? (
+        <Virtuoso
+          style={{ height: '80vh' }}
+          totalCount={fusionsData.fusions.length}
+          itemContent={(index) => {
+            const fusion = fusionsData.fusions[index]
+            return (
+              <div className="pb-6">
+                <FusionCard
+                  key={fusion.id}
+                  fusion={fusion}
+                  sessionId={sessionId!}
+                  activeTab={activeTab}
+                  viewMode={viewMode}
+                  domainFilters={domainFilters}
+                  showStrandOrientation={showStrandOrientation}
+                  domainColorMap={domainColorMap}
+                  onDomainsLoaded={handleDomainsLoaded}
+                  isSelected={selectedForCompare.has(fusion.id)}
+                  onToggleSelect={toggleFusionSelection}
+                />
+              </div>
+            )
+          }}
+        />
+      ) : (
+        <div className="space-y-6">
+          {fusionsData.fusions.map((fusion) => (
+            <FusionCard
+              key={fusion.id}
+              fusion={fusion}
+              sessionId={sessionId!}
+              activeTab={activeTab}
+              viewMode={viewMode}
+              domainFilters={domainFilters}
+              showStrandOrientation={showStrandOrientation}
+              domainColorMap={domainColorMap}
+              onDomainsLoaded={handleDomainsLoaded}
+              isSelected={selectedForCompare.has(fusion.id)}
+              onToggleSelect={toggleFusionSelection}
+            />
+          ))}
+        </div>
+      )}
     </div>
   )
 }
