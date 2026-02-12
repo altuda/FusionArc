@@ -1,6 +1,8 @@
 import { useMemo } from 'react'
 import { DomainInfo } from '../../api/client'
 import { DomainColorMap } from '../../utils/domainColors'
+import { inferFeatureType } from '../../utils/featureType'
+import { TYPE_COLORS, SOURCE_COLORS as SOURCE_COLOR_MAP } from '../../utils/colorConstants'
 
 interface DomainColorLegendProps {
   domains: DomainInfo[]
@@ -249,65 +251,129 @@ function escapeXml(str: string): string {
     .replace(/'/g, '&apos;')
 }
 
-// Feature type colors (matching ProteinSchematic)
-export const FEATURE_TYPE_COLORS: Record<string, { color: string; label: string }> = {
-  'kinase': { color: '#EF4444', label: 'Kinase' },
-  'domain': { color: '#3B82F6', label: 'Domain' },
-  'family': { color: '#8B5CF6', label: 'Family' },
-  'homologous_superfamily': { color: '#F59E0B', label: 'Homologous Superfamily' },
-  'repeat': { color: '#10B981', label: 'Repeat' },
-  'site': { color: '#EC4899', label: 'Site' },
-  'signal_peptide': { color: '#F97316', label: 'Signal Peptide' },
-  'transmembrane': { color: '#14B8A6', label: 'Transmembrane' },
-  'coiled_coil': { color: '#0EA5E9', label: 'Coiled Coil' },
-  'low_complexity': { color: '#78716C', label: 'Low Complexity' },
-  'disorder': { color: '#64748B', label: 'Disorder' },
-  'structure': { color: '#22C55E', label: 'Structure' },
+// Interface for genomic location data used in exports
+export interface GenomicLocationInfo {
+  geneA: {
+    symbol: string
+    chromosome?: string
+    breakpoint?: number
+    strand?: string
+    breakpointLocation?: string  // "exon 5", "intron 3"
+  }
+  geneB: {
+    symbol: string
+    chromosome?: string
+    breakpoint?: number
+    strand?: string
+    breakpointLocation?: string
+  }
+  genomeBuild?: 'hg19' | 'hg38'
 }
 
-// Infer feature type from domain name and source (matching ProteinSchematic logic)
-export function inferFeatureType(name: string, source: string): string {
-  const nameLower = name.toLowerCase()
-  if (nameLower.includes('kinase')) return 'kinase'
-  if (nameLower.includes('repeat') || nameLower.includes('wd40') || nameLower.includes('ank') || nameLower.includes('lrr')) return 'repeat'
-  if (nameLower.includes('motif')) return 'motif'
-  if (nameLower.includes('site') || nameLower.includes('binding')) return 'site'
-  if (nameLower.includes('signal') || nameLower.includes('peptide')) return 'signal_peptide'
-  if (nameLower.includes('transmembrane') || nameLower.includes('tm_helix')) return 'transmembrane'
-  if (nameLower.includes('coil')) return 'coiled_coil'
-  if (nameLower.includes('disorder') || nameLower.includes('low_complexity') || nameLower.includes('low complexity')) return 'disorder'
-  if (nameLower.includes('family')) return 'family'
-  if (nameLower.includes('superfamily')) return 'homologous_superfamily'
-  if (nameLower.includes('domain')) return 'domain'
-  const sourceLower = source.toLowerCase()
-  if (sourceLower.includes('superfamily') || sourceLower.includes('gene3d')) return 'homologous_superfamily'
-  if (sourceLower === 'panther') return 'family'
-  if (sourceLower === 'signalp') return 'signal_peptide'
-  if (sourceLower === 'phobius') return 'transmembrane'
-  if (sourceLower === 'ncoils') return 'coiled_coil'
-  if (sourceLower === 'seg' || sourceLower === 'mobidblite') return 'disorder'
-  if (sourceLower === 'alphafold' || sourceLower === 'sifts') return 'structure'
-  return 'domain'
+/**
+ * Generate SVG markup for genomic coordinates header.
+ * Shows genome build, and breakpoint info for both genes.
+ */
+export function generateGenomicLocationSVG(
+  location: GenomicLocationInfo,
+  options: {
+    x?: number
+    y?: number
+    fontSize?: number
+  } = {}
+): { svg: string; height: number } {
+  const {
+    x = 10,
+    y = 16,
+    fontSize = 12
+  } = options
+
+  const lines: string[] = []
+  let currentY = y
+
+  // Gene colors matching the visualization
+  const geneAColor = '#3B82F6'  // Blue for 5' gene
+  const geneBColor = '#10B981'  // Green for 3' gene
+  const labelColor = '#374151'
+
+  // Title line with genome build
+  const buildLabel = location.genomeBuild || 'hg38'
+  lines.push(`<text x="${x}" y="${currentY}" font-family="Arial, sans-serif" font-size="${fontSize}" font-weight="bold" fill="${labelColor}">Genomic Coordinates (${buildLabel})</text>`)
+  currentY += fontSize + 6
+
+  // Format breakpoint with commas
+  const formatBreakpoint = (bp?: number) => bp ? bp.toLocaleString() : '?'
+
+  // Gene A line (5' partner)
+  const geneAInfo = location.geneA
+  let geneAText = `5': ${geneAInfo.symbol}`
+  if (geneAInfo.chromosome) {
+    geneAText += ` chr${geneAInfo.chromosome}:${formatBreakpoint(geneAInfo.breakpoint)}`
+  }
+  if (geneAInfo.strand) {
+    geneAText += ` (${geneAInfo.strand})`
+  }
+  if (geneAInfo.breakpointLocation) {
+    geneAText += ` [${geneAInfo.breakpointLocation}]`
+  }
+  lines.push(`<text x="${x}" y="${currentY}" font-family="Arial, sans-serif" font-size="${fontSize}" fill="${geneAColor}">${escapeXml(geneAText)}</text>`)
+  currentY += fontSize + 4
+
+  // Gene B line (3' partner)
+  const geneBInfo = location.geneB
+  let geneBText = `3': ${geneBInfo.symbol}`
+  if (geneBInfo.chromosome) {
+    geneBText += ` chr${geneBInfo.chromosome}:${formatBreakpoint(geneBInfo.breakpoint)}`
+  }
+  if (geneBInfo.strand) {
+    geneBText += ` (${geneBInfo.strand})`
+  }
+  if (geneBInfo.breakpointLocation) {
+    geneBText += ` [${geneBInfo.breakpointLocation}]`
+  }
+  lines.push(`<text x="${x}" y="${currentY}" font-family="Arial, sans-serif" font-size="${fontSize}" fill="${geneBColor}">${escapeXml(geneBText)}</text>`)
+  currentY += fontSize + 8  // Extra padding after the header
+
+  return {
+    svg: lines.join('\n'),
+    height: currentY - y + 8  // Total height used
+  }
 }
 
-// Database source colors (matching ProteinSchematic)
-export const SOURCE_COLORS: Record<string, { color: string; label: string }> = {
-  'Pfam': { color: '#3B82F6', label: 'Pfam' },
-  'SMART': { color: '#10B981', label: 'SMART' },
-  'Superfamily': { color: '#F59E0B', label: 'Superfamily' },
-  'CDD': { color: '#8B5CF6', label: 'CDD' },
-  'PANTHER': { color: '#EC4899', label: 'PANTHER' },
-  'Gene3D': { color: '#06B6D4', label: 'Gene3D' },
-  'Prosite_profiles': { color: '#84CC16', label: 'PROSITE Profiles' },
-  'Prosite_patterns': { color: '#84CC16', label: 'PROSITE Patterns' },
-  'SignalP': { color: '#F97316', label: 'SignalP' },
-  'Phobius': { color: '#14B8A6', label: 'Phobius' },
-  'PRINTS': { color: '#A855F7', label: 'PRINTS' },
-  'MobiDBLite': { color: '#64748B', label: 'MobiDB-lite' },
-  'Seg': { color: '#78716C', label: 'SEG' },
-  'ncoils': { color: '#0EA5E9', label: 'Ncoils' },
-  'InterPro': { color: '#059669', label: 'InterPro' },
+// Feature type colors with labels, derived from shared TYPE_COLORS
+const FEATURE_TYPE_LABELS: Record<string, string> = {
+  'kinase': 'Kinase', 'domain': 'Domain', 'family': 'Family',
+  'homologous_superfamily': 'Homologous Superfamily', 'repeat': 'Repeat',
+  'site': 'Site', 'signal_peptide': 'Signal Peptide', 'transmembrane': 'Transmembrane',
+  'coiled_coil': 'Coiled Coil', 'low_complexity': 'Low Complexity',
+  'disorder': 'Disorder', 'structure': 'Structure',
 }
+
+export const FEATURE_TYPE_COLORS: Record<string, { color: string; label: string }> =
+  Object.fromEntries(
+    Object.entries(FEATURE_TYPE_LABELS).map(([key, label]) => [
+      key,
+      { color: TYPE_COLORS[key] || '#6366F1', label },
+    ])
+  )
+
+// Database source colors with labels, derived from shared SOURCE_COLOR_MAP
+const SOURCE_LABEL_MAP: Record<string, string> = {
+  'Pfam': 'Pfam', 'SMART': 'SMART', 'Superfamily': 'Superfamily',
+  'CDD': 'CDD', 'PANTHER': 'PANTHER', 'Gene3D': 'Gene3D',
+  'Prosite_profiles': 'PROSITE Profiles', 'Prosite_patterns': 'PROSITE Patterns',
+  'SignalP': 'SignalP', 'Phobius': 'Phobius', 'PRINTS': 'PRINTS',
+  'MobiDBLite': 'MobiDB-lite', 'Seg': 'SEG', 'ncoils': 'Ncoils',
+  'InterPro': 'InterPro',
+}
+
+export const SOURCE_COLORS: Record<string, { color: string; label: string }> =
+  Object.fromEntries(
+    Object.entries(SOURCE_LABEL_MAP).map(([key, label]) => [
+      key,
+      { color: SOURCE_COLOR_MAP[key] || '#6366F1', label },
+    ])
+  )
 
 /**
  * Legend for feature type coloring mode.

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Body, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, delete, or_
+from sqlalchemy import select, func, delete
 from typing import List, Optional, Set
 from pydantic import BaseModel
 from app.database import get_db
@@ -19,7 +19,12 @@ from app.schemas.fusion import (
     FusionTranscriptData,
     FusionExonInfo,
     MutationInfo,
-    MutationResponse
+    MutationResponse,
+    ClinVarVariant,
+    ClinVarResponse,
+    DrugTarget,
+    GeneTargetInfo,
+    DrugTargetResponse,
 )
 
 
@@ -32,6 +37,9 @@ from app.core.fusion_builder import FusionBuilder, normalize_source_name
 from app.external.ensembl import get_ensembl_client
 from app.external.interpro import get_interpro_client
 from app.external.cbioportal import get_cbioportal_client
+from app.external.clinvar import get_clinvar_client
+from app.external.chembl import get_chembl_client
+from app.external.gnomad import get_gnomad_client
 import logging
 
 logger = logging.getLogger(__name__)
@@ -1452,15 +1460,19 @@ def _determine_domain_status(
 async def get_fusion_mutations(
     session_id: str,
     fusion_id: str,
+    include_gnomad: bool = Query(default=True, description="Include gnomAD allele frequencies"),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Get mutation data for both genes in a fusion from cBioPortal.
+    Get mutation/variant data for both genes in a fusion from ClinVar and gnomAD.
 
-    Fetches real cancer mutation data from TCGA, MSK-IMPACT, and other studies.
-    Returns mutations aggregated by position with counts.
+    Fetches clinical variant data from ClinVar with pathogenicity annotations,
+    and population allele frequencies from gnomAD.
+    Returns variants aggregated by position.
     """
     import logging
+    import asyncio
+    import re
     logger = logging.getLogger(__name__)
 
     # Get the fusion
@@ -1477,57 +1489,272 @@ async def get_fusion_mutations(
     logger.info(f"Fetching mutations for {fusion.gene_a_symbol}--{fusion.gene_b_symbol}")
     logger.info(f"  AA breakpoints: A={fusion.aa_breakpoint_a}, B={fusion.aa_breakpoint_b}")
 
-    # Get cBioPortal client
-    cbioportal = get_cbioportal_client()
+    # Get clients
+    clinvar = get_clinvar_client()
+    gnomad = get_gnomad_client() if include_gnomad else None
 
-    # Fetch mutations for both genes in parallel
-    import asyncio
-    mutations_a_task = cbioportal.get_mutation_counts(fusion.gene_a_symbol)
-    mutations_b_task = cbioportal.get_mutation_counts(fusion.gene_b_symbol)
+    # Determine reference genome for gnomAD
+    reference_genome = "GRCh38" if fusion.genome_build == "hg38" else "GRCh37"
+    genome_build = fusion.genome_build or "hg38"
 
-    mutations_a_raw, mutations_b_raw = await asyncio.gather(
-        mutations_a_task, mutations_b_task, return_exceptions=True
-    )
+    # Fetch transcript and exon data for genomic-to-protein mapping
+    transcript_a = None
+    exons_a_data = []
+    if fusion.transcript_a_id:
+        transcript_a = (await db.execute(
+            select(Transcript).where(Transcript.id == fusion.transcript_a_id)
+        )).scalar_one_or_none()
+        if transcript_a:
+            exons_a_data = [
+                {"start": e.start, "end": e.end, "rank": e.rank}
+                for e in (await db.execute(
+                    select(Exon).where(Exon.transcript_id == fusion.transcript_a_id).order_by(Exon.rank)
+                )).scalars().all()
+            ]
 
-    # Process gene A mutations
+    transcript_b = None
+    exons_b_data = []
+    if fusion.transcript_b_id:
+        transcript_b = (await db.execute(
+            select(Transcript).where(Transcript.id == fusion.transcript_b_id)
+        )).scalar_one_or_none()
+        if transcript_b:
+            exons_b_data = [
+                {"start": e.start, "end": e.end, "rank": e.rank}
+                for e in (await db.execute(
+                    select(Exon).where(Exon.transcript_id == fusion.transcript_b_id).order_by(Exon.rank)
+                )).scalars().all()
+            ]
+
+    # Fetch variants for both genes in parallel (ClinVar + gnomAD)
+    tasks = [
+        clinvar.get_gene_clinical_variants(
+            gene_symbol=fusion.gene_a_symbol,
+            chromosome=fusion.gene_a_chromosome or "",
+            gene_start=transcript_a.start if transcript_a else 0,
+            gene_end=transcript_a.end if transcript_a else 0,
+            strand=fusion.gene_a_strand or "+",
+            exons=exons_a_data,
+            cds_start=transcript_a.cds_start if transcript_a else 0,
+            cds_end=transcript_a.cds_end if transcript_a else 0,
+            genome_build=genome_build,
+        ),
+        clinvar.get_gene_clinical_variants(
+            gene_symbol=fusion.gene_b_symbol,
+            chromosome=fusion.gene_b_chromosome or "",
+            gene_start=transcript_b.start if transcript_b else 0,
+            gene_end=transcript_b.end if transcript_b else 0,
+            strand=fusion.gene_b_strand or "+",
+            exons=exons_b_data,
+            cds_start=transcript_b.cds_start if transcript_b else 0,
+            cds_end=transcript_b.cds_end if transcript_b else 0,
+            genome_build=genome_build,
+        ),
+    ]
+    if gnomad:
+        tasks.extend([
+            gnomad.get_gene_variants(fusion.gene_a_symbol, reference_genome=reference_genome),
+            gnomad.get_gene_variants(fusion.gene_b_symbol, reference_genome=reference_genome),
+        ])
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    variants_a_raw = results[0] if isinstance(results[0], list) else []
+    variants_b_raw = results[1] if isinstance(results[1], list) else []
+    gnomad_a_raw = results[2] if len(results) > 2 and isinstance(results[2], list) else []
+    gnomad_b_raw = results[3] if len(results) > 3 and isinstance(results[3], list) else []
+
+    # Build gnomAD lookup by position - store LIST of variants per position to not lose duplicates
+    from collections import defaultdict
+    gnomad_a_by_pos: dict = defaultdict(list)
+    gnomad_b_by_pos: dict = defaultdict(list)
+    for v in gnomad_a_raw:
+        if v.get("position"):
+            gnomad_a_by_pos[v["position"]].append(v)
+    for v in gnomad_b_raw:
+        if v.get("position"):
+            gnomad_b_by_pos[v["position"]].append(v)
+
+    # Also create a lookup for best AF match (for ClinVar annotation)
+    def get_best_gnomad(pos: int, lookup: dict) -> dict:
+        """Get the gnomAD variant with highest AF at this position."""
+        variants = lookup.get(pos, [])
+        if not variants:
+            return {}
+        return max(variants, key=lambda v: v.get("af") or 0)
+
+    gnomad_a_lookup = {pos: get_best_gnomad(pos, gnomad_a_by_pos) for pos in gnomad_a_by_pos}
+    gnomad_b_lookup = {pos: get_best_gnomad(pos, gnomad_b_by_pos) for pos in gnomad_b_by_pos}
+
+    logger.info(f"  gnomAD variants: A={len(gnomad_a_raw)}, B={len(gnomad_b_raw)}")
+
+    def normalize_protein_change(protein_change: str) -> str:
+        """Extract the first/canonical protein change from multi-transcript annotation.
+
+        ClinVar often returns protein changes for multiple transcripts:
+        'P261S, P297S, P198S' -> 'P261S' (first/canonical)
+        """
+        if not protein_change:
+            return ""
+        # Take only the first protein change (before first comma)
+        first = protein_change.split(",")[0].strip()
+        return first
+
+    def parse_mutation_type(protein_change: str, title: str = "") -> str:
+        """Parse mutation type from protein change notation."""
+        text = (protein_change + " " + title).lower()
+
+        if "fs" in text or "frameshift" in text:
+            return "frameshift"
+        if "*" in protein_change or "ter" in text or "stop" in text or "nonsense" in text:
+            return "nonsense"
+        if "splice" in text or re.search(r'[+-]\d+[acgt]', text):
+            return "splice"
+        if "del" in text or "ins" in text or "dup" in text:
+            return "inframe_indel"
+        if "synonymous" in text or "silent" in text or "=" in protein_change:
+            return "silent"
+        if re.search(r'[A-Z][a-z]{0,2}\d+[A-Z][a-z]{0,2}', protein_change):
+            return "missense"
+        return "other"
+
+    # Process gene A variants (ClinVar + gnomAD)
     mutations_a = []
-    if isinstance(mutations_a_raw, list):
-        for mut in mutations_a_raw:
-            # For 5' gene, include mutations before breakpoint (retained in fusion)
-            # If no breakpoint known, include all mutations
-            if fusion.aa_breakpoint_a is None or mut["position"] <= fusion.aa_breakpoint_a:
-                mutations_a.append(MutationInfo(
-                    position=mut["position"],
-                    ref_aa=mut.get("ref_aa", ""),
-                    alt_aa=mut.get("alt_aa", ""),
-                    type=mut["type"],
-                    label=mut["label"],
-                    count=mut["count"],
-                    source=mut.get("source", "cBioPortal"),
-                    gene="A"
-                ))
 
-    # Process gene B mutations
+    # First, process ClinVar variants
+    if variants_a_raw:
+        position_counts: dict = {}
+        for var in variants_a_raw:
+            pos = var.get("position")
+            if pos is None:
+                continue
+
+            # Normalize protein change to canonical (first) transcript
+            norm_pc = normalize_protein_change(var.get("protein_change", ""))
+            # Key by position + normalized protein_change; same variant deduplicates
+            key = f"{pos}_{norm_pc}"
+            if key not in position_counts:
+                position_counts[key] = {
+                    "position": pos,
+                    "protein_change": norm_pc,
+                    "hgvsc": var.get("hgvsc", ""),
+                    "is_intronic": var.get("is_intronic", False),
+                    "title": var.get("title", ""),
+                    "clinical_significance": var.get("clinical_significance", ""),
+                    "variant_type": var.get("variant_type", "other"),
+                    "count": 0
+                }
+            position_counts[key]["count"] += 1
+
+        for data in position_counts.values():
+            pos = data["position"]
+
+            # Get gnomAD data for this position
+            gnomad_data = gnomad_a_lookup.get(pos, {})
+
+            clinvar_hgvsc = data.get("hgvsc", "")
+            label = data["protein_change"] or f"pos {pos}"
+
+            # Use variant_type from ClinVar VCF data (parsed from MC or inferred)
+            mut_type = data.get("variant_type", "other")
+            # Fallback: try to parse from protein_change/title if variant_type is generic
+            if mut_type == "other" and not data.get("is_intronic"):
+                parsed_type = parse_mutation_type(data["protein_change"], data["title"])
+                if parsed_type != "other":
+                    mut_type = parsed_type
+
+            mutations_a.append(MutationInfo(
+                position=pos,
+                ref_aa="",
+                alt_aa="",
+                type=mut_type,
+                label=label,
+                count=data["count"],
+                source="ClinVar",
+                gene="A",
+                clinical_significance=data["clinical_significance"] or None,
+                gnomad_af=gnomad_data.get("af"),
+                gnomad_ac=gnomad_data.get("ac"),
+                gnomad_an=gnomad_data.get("an"),
+                gnomad_homozygotes=gnomad_data.get("homozygote_count"),
+                genomic_pos=gnomad_data.get("genomic_pos"),
+                hgvsc=clinvar_hgvsc or gnomad_data.get("hgvsc"),
+                consequence=gnomad_data.get("consequence") or ("intron_variant" if data.get("is_intronic") else None),
+            ))
+
+    # Process gene B variants (ClinVar + gnomAD)
     mutations_b = []
-    if isinstance(mutations_b_raw, list):
-        for mut in mutations_b_raw:
-            # For 3' gene, include mutations after breakpoint (retained in fusion)
-            # If no breakpoint known, include all mutations
-            if fusion.aa_breakpoint_b is None or mut["position"] >= fusion.aa_breakpoint_b:
-                mutations_b.append(MutationInfo(
-                    position=mut["position"],
-                    ref_aa=mut.get("ref_aa", ""),
-                    alt_aa=mut.get("alt_aa", ""),
-                    type=mut["type"],
-                    label=mut["label"],
-                    count=mut["count"],
-                    source=mut.get("source", "cBioPortal"),
-                    gene="B"
-                ))
 
-    logger.info(f"  Raw mutations: A={len(mutations_a_raw) if isinstance(mutations_a_raw, list) else 'error'}, "
-                f"B={len(mutations_b_raw) if isinstance(mutations_b_raw, list) else 'error'}")
-    logger.info(f"  Filtered mutations: A={len(mutations_a)}, B={len(mutations_b)}")
+    if variants_b_raw:
+        position_counts = {}
+        for var in variants_b_raw:
+            pos = var.get("position")
+            if pos is None:
+                continue
+
+            # Normalize protein change to canonical (first) transcript
+            norm_pc = normalize_protein_change(var.get("protein_change", ""))
+            # Key by position + normalized protein_change; same variant deduplicates
+            key = f"{pos}_{norm_pc}"
+            if key not in position_counts:
+                position_counts[key] = {
+                    "position": pos,
+                    "protein_change": norm_pc,
+                    "hgvsc": var.get("hgvsc", ""),
+                    "is_intronic": var.get("is_intronic", False),
+                    "title": var.get("title", ""),
+                    "clinical_significance": var.get("clinical_significance", ""),
+                    "variant_type": var.get("variant_type", "other"),
+                    "count": 0
+                }
+            position_counts[key]["count"] += 1
+
+        for data in position_counts.values():
+            pos = data["position"]
+
+            # Get gnomAD data for this position
+            gnomad_data = gnomad_b_lookup.get(pos, {})
+
+            clinvar_hgvsc = data.get("hgvsc", "")
+            label = data["protein_change"] or f"pos {pos}"
+
+            # Use variant_type from ClinVar VCF data (parsed from MC or inferred)
+            mut_type = data.get("variant_type", "other")
+            # Fallback: try to parse from protein_change/title if variant_type is generic
+            if mut_type == "other" and not data.get("is_intronic"):
+                parsed_type = parse_mutation_type(data["protein_change"], data["title"])
+                if parsed_type != "other":
+                    mut_type = parsed_type
+
+            mutations_b.append(MutationInfo(
+                position=pos,
+                ref_aa="",
+                alt_aa="",
+                type=mut_type,
+                label=label,
+                count=data["count"],
+                source="ClinVar",
+                gene="B",
+                clinical_significance=data["clinical_significance"] or None,
+                gnomad_af=gnomad_data.get("af"),
+                gnomad_ac=gnomad_data.get("ac"),
+                gnomad_an=gnomad_data.get("an"),
+                gnomad_homozygotes=gnomad_data.get("homozygote_count"),
+                genomic_pos=gnomad_data.get("genomic_pos"),
+                hgvsc=clinvar_hgvsc or gnomad_data.get("hgvsc"),
+                consequence=gnomad_data.get("consequence") or ("intron_variant" if data.get("is_intronic") else None),
+            ))
+
+    # Sort by gnomAD AF (highest first), then by count, then position
+    def sort_key(m):
+        af = m.gnomad_af if m.gnomad_af is not None else 0
+        return (-af, -m.count, m.position)
+
+    mutations_a.sort(key=sort_key)
+    mutations_b.sort(key=sort_key)
+
+    logger.info(f"  Raw variants: A={len(variants_a_raw)}, B={len(variants_b_raw)}")
+    logger.info(f"  Final mutations: A={len(mutations_a)}, B={len(mutations_b)}")
 
     return MutationResponse(
         gene_a_symbol=fusion.gene_a_symbol,
@@ -1535,4 +1762,240 @@ async def get_fusion_mutations(
         mutations_a=mutations_a,
         mutations_b=mutations_b,
         total_count=len(mutations_a) + len(mutations_b)
+    )
+
+
+@router.get("/{session_id}/{fusion_id}/clinvar", response_model=ClinVarResponse)
+async def get_fusion_clinvar_variants(
+    session_id: str,
+    fusion_id: str,
+    max_results: int = Query(default=100, le=500),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get ClinVar clinical variants for genes in a fusion.
+
+    Returns variants with clinical significance annotations from ClinVar.
+    Only includes variants that fall within retained portions of the fusion.
+    """
+    result = await db.execute(
+        select(Fusion)
+        .where(Fusion.session_id == session_id)
+        .where(Fusion.id == fusion_id)
+    )
+    fusion = result.scalar_one_or_none()
+
+    if not fusion:
+        raise HTTPException(404, "Fusion not found")
+
+    logger.info(f"Fetching ClinVar variants for {fusion.gene_a_symbol}--{fusion.gene_b_symbol}")
+
+    clinvar = get_clinvar_client()
+    genome_build = fusion.genome_build or "hg38"
+
+    # Fetch transcript and exon data for genomic-to-protein mapping
+    transcript_a = None
+    exons_a_data = []
+    if fusion.transcript_a_id:
+        transcript_a = (await db.execute(
+            select(Transcript).where(Transcript.id == fusion.transcript_a_id)
+        )).scalar_one_or_none()
+        if transcript_a:
+            exons_a_data = [
+                {"start": e.start, "end": e.end, "rank": e.rank}
+                for e in (await db.execute(
+                    select(Exon).where(Exon.transcript_id == fusion.transcript_a_id).order_by(Exon.rank)
+                )).scalars().all()
+            ]
+
+    transcript_b = None
+    exons_b_data = []
+    if fusion.transcript_b_id:
+        transcript_b = (await db.execute(
+            select(Transcript).where(Transcript.id == fusion.transcript_b_id)
+        )).scalar_one_or_none()
+        if transcript_b:
+            exons_b_data = [
+                {"start": e.start, "end": e.end, "rank": e.rank}
+                for e in (await db.execute(
+                    select(Exon).where(Exon.transcript_id == fusion.transcript_b_id).order_by(Exon.rank)
+                )).scalars().all()
+            ]
+
+    # Fetch variants for both genes in parallel
+    import asyncio
+    results = await asyncio.gather(
+        clinvar.get_gene_clinical_variants(
+            gene_symbol=fusion.gene_a_symbol,
+            chromosome=fusion.gene_a_chromosome or "",
+            gene_start=transcript_a.start if transcript_a else 0,
+            gene_end=transcript_a.end if transcript_a else 0,
+            strand=fusion.gene_a_strand or "+",
+            exons=exons_a_data,
+            cds_start=transcript_a.cds_start if transcript_a else 0,
+            cds_end=transcript_a.cds_end if transcript_a else 0,
+            genome_build=genome_build,
+            max_results=max_results // 2,
+        ),
+        clinvar.get_gene_clinical_variants(
+            gene_symbol=fusion.gene_b_symbol,
+            chromosome=fusion.gene_b_chromosome or "",
+            gene_start=transcript_b.start if transcript_b else 0,
+            gene_end=transcript_b.end if transcript_b else 0,
+            strand=fusion.gene_b_strand or "+",
+            exons=exons_b_data,
+            cds_start=transcript_b.cds_start if transcript_b else 0,
+            cds_end=transcript_b.cds_end if transcript_b else 0,
+            genome_build=genome_build,
+            max_results=max_results // 2,
+        ),
+        return_exceptions=True
+    )
+
+    variants = []
+
+    # Process gene A variants
+    if isinstance(results[0], list):
+        for var in results[0]:
+            # Filter to retained region if breakpoint is known
+            if var.get("position") is not None:
+                if fusion.aa_breakpoint_a is None or var["position"] <= fusion.aa_breakpoint_a:
+                    variants.append(ClinVarVariant(
+                        clinvar_id=var.get("clinvar_id", ""),
+                        accession=var.get("accession", ""),
+                        title=var.get("title", ""),
+                        position=var.get("position"),
+                        protein_change=var.get("protein_change", ""),
+                        clinical_significance=var.get("clinical_significance", ""),
+                        conditions=var.get("conditions", []),
+                        review_status=var.get("review_status", ""),
+                        gene=fusion.gene_a_symbol,
+                    ))
+
+    # Process gene B variants
+    if isinstance(results[1], list):
+        for var in results[1]:
+            if var.get("position") is not None:
+                if fusion.aa_breakpoint_b is None or var["position"] >= fusion.aa_breakpoint_b:
+                    variants.append(ClinVarVariant(
+                        clinvar_id=var.get("clinvar_id", ""),
+                        accession=var.get("accession", ""),
+                        title=var.get("title", ""),
+                        position=var.get("position"),
+                        protein_change=var.get("protein_change", ""),
+                        clinical_significance=var.get("clinical_significance", ""),
+                        conditions=var.get("conditions", []),
+                        review_status=var.get("review_status", ""),
+                        gene=fusion.gene_b_symbol,
+                    ))
+
+    logger.info(f"Found {len(variants)} ClinVar variants for fusion")
+
+    return ClinVarResponse(
+        gene_symbol=f"{fusion.gene_a_symbol}--{fusion.gene_b_symbol}",
+        variants=variants[:max_results],
+        total_count=len(variants)
+    )
+
+
+@router.get("/{session_id}/{fusion_id}/drugs", response_model=DrugTargetResponse)
+async def get_fusion_drug_targets(
+    session_id: str,
+    fusion_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get drug target information for genes in a fusion.
+
+    Returns approved drugs from ChEMBL that target either gene in the fusion.
+    """
+    result = await db.execute(
+        select(Fusion)
+        .where(Fusion.session_id == session_id)
+        .where(Fusion.id == fusion_id)
+    )
+    fusion = result.scalar_one_or_none()
+
+    if not fusion:
+        raise HTTPException(404, "Fusion not found")
+
+    logger.info(f"Fetching drug targets for {fusion.gene_a_symbol}--{fusion.gene_b_symbol}")
+
+    chembl = get_chembl_client()
+
+    # Fetch drug info for the fusion
+    drug_info = await chembl.get_drugs_for_fusion(
+        fusion.gene_a_symbol,
+        fusion.gene_b_symbol
+    )
+
+    # Convert to response models
+    gene_a_info = GeneTargetInfo(
+        gene=drug_info["gene_a"]["gene"],
+        target_found=drug_info["gene_a"]["target_found"],
+        target_chembl_id=drug_info["gene_a"].get("target_chembl_id"),
+        target_name=drug_info["gene_a"].get("target_name"),
+        target_type=drug_info["gene_a"].get("target_type"),
+        drugs=[
+            DrugTarget(
+                chembl_id=d["chembl_id"],
+                name=d["name"],
+                max_phase=d.get("max_phase"),
+                molecule_type=d.get("molecule_type"),
+                first_approval=d.get("first_approval"),
+                indication_class=d.get("indication_class"),
+                targets=[fusion.gene_a_symbol],
+                oral=d.get("oral"),
+                withdrawn_flag=d.get("withdrawn_flag"),
+            )
+            for d in drug_info["gene_a"].get("drugs", [])
+        ],
+        drug_count=drug_info["gene_a"].get("drug_count", 0)
+    )
+
+    gene_b_info = GeneTargetInfo(
+        gene=drug_info["gene_b"]["gene"],
+        target_found=drug_info["gene_b"]["target_found"],
+        target_chembl_id=drug_info["gene_b"].get("target_chembl_id"),
+        target_name=drug_info["gene_b"].get("target_name"),
+        target_type=drug_info["gene_b"].get("target_type"),
+        drugs=[
+            DrugTarget(
+                chembl_id=d["chembl_id"],
+                name=d["name"],
+                max_phase=d.get("max_phase"),
+                molecule_type=d.get("molecule_type"),
+                first_approval=d.get("first_approval"),
+                indication_class=d.get("indication_class"),
+                targets=[fusion.gene_b_symbol],
+                oral=d.get("oral"),
+                withdrawn_flag=d.get("withdrawn_flag"),
+            )
+            for d in drug_info["gene_b"].get("drugs", [])
+        ],
+        drug_count=drug_info["gene_b"].get("drug_count", 0)
+    )
+
+    combined_drugs = [
+        DrugTarget(
+            chembl_id=d["chembl_id"],
+            name=d["name"],
+            max_phase=d.get("max_phase"),
+            molecule_type=d.get("molecule_type"),
+            first_approval=d.get("first_approval"),
+            indication_class=d.get("indication_class"),
+            targets=d.get("targets", []),
+            oral=d.get("oral"),
+            withdrawn_flag=d.get("withdrawn_flag"),
+        )
+        for d in drug_info.get("combined_drugs", [])
+    ]
+
+    logger.info(f"Found {drug_info.get('total_drug_count', 0)} approved drugs for fusion")
+
+    return DrugTargetResponse(
+        gene_a=gene_a_info,
+        gene_b=gene_b_info,
+        combined_drugs=combined_drugs,
+        total_drug_count=drug_info.get("total_drug_count", 0)
     )

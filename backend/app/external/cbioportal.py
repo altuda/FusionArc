@@ -13,6 +13,12 @@ from typing import Optional, List, Dict, Any
 from tenacity import retry, stop_after_attempt, wait_exponential
 import logging
 
+from app.external.protein_utils import (
+    extract_protein_position,
+    three_to_one_aa,
+    normalize_mutation_type,
+)
+
 logger = logging.getLogger(__name__)
 
 CBIOPORTAL_API_BASE = "https://www.cbioportal.org/api"
@@ -107,12 +113,14 @@ class CBioPortalClient:
         Returns list of mutations with position, amino acid change, type, and frequency.
         """
         try:
-            # First, get the gene's Entrez ID
-            gene_info = await self._request("GET", f"/genes/{gene_symbol}")
-            if not gene_info:
+            # First, get the gene's Entrez ID using the search endpoint
+            # The /genes/{symbol} endpoint doesn't exist - must use /genes?keyword=SYMBOL
+            genes = await self._request("GET", "/genes", params={"keyword": gene_symbol})
+            if not genes or len(genes) == 0:
                 logger.warning(f"Gene {gene_symbol} not found in cBioPortal")
                 return []
 
+            gene_info = genes[0]  # Take first match
             entrez_id = gene_info.get("entrezGeneId")
             if not entrez_id:
                 logger.warning(f"No Entrez ID for {gene_symbol}")
@@ -244,20 +252,7 @@ class CBioPortalClient:
 
     def _parse_protein_position(self, protein_change: str) -> Optional[int]:
         """Extract amino acid position from protein change string (e.g., 'V600E' -> 600)."""
-        if not protein_change:
-            return None
-
-        # Remove 'p.' prefix if present
-        if protein_change.startswith("p."):
-            protein_change = protein_change[2:]
-
-        # Extract digits
-        import re
-        match = re.search(r'(\d+)', protein_change)
-        if match:
-            return int(match.group(1))
-
-        return None
+        return extract_protein_position(protein_change)
 
     def _extract_ref_aa(self, protein_change: str) -> str:
         """Extract reference amino acid from protein change."""
@@ -300,38 +295,11 @@ class CBioPortalClient:
 
     def _three_to_one(self, aa: str) -> str:
         """Convert 3-letter amino acid code to 1-letter."""
-        mapping = {
-            "Ala": "A", "Arg": "R", "Asn": "N", "Asp": "D",
-            "Cys": "C", "Gln": "Q", "Glu": "E", "Gly": "G",
-            "His": "H", "Ile": "I", "Leu": "L", "Lys": "K",
-            "Met": "M", "Phe": "F", "Pro": "P", "Ser": "S",
-            "Thr": "T", "Trp": "W", "Tyr": "Y", "Val": "V",
-        }
-        return mapping.get(aa, aa)
+        return three_to_one_aa(aa)
 
     def _normalize_mutation_type(self, mutation_type: str) -> str:
         """Normalize mutation type to standard categories."""
-        if not mutation_type:
-            return "other"
-
-        mt = mutation_type.lower()
-
-        if "missense" in mt:
-            return "missense"
-        if "nonsense" in mt or "stop" in mt:
-            return "nonsense"
-        if "frameshift" in mt or "frame_shift" in mt:
-            return "frameshift"
-        if "silent" in mt or "synonymous" in mt:
-            return "silent"
-        if "splice" in mt:
-            return "splice"
-        if "inframe" in mt or "in_frame" in mt:
-            return "inframe_indel"
-        if "insertion" in mt or "deletion" in mt:
-            return "inframe_indel"
-
-        return "other"
+        return normalize_mutation_type(mutation_type)
 
 
 # Singleton client

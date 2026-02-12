@@ -3,6 +3,7 @@ import * as d3 from 'd3'
 import { VisualizationData, MutationInfo, MutationType } from '../../api/client'
 import { useTheme } from '../../context/ThemeContext'
 import { DomainColorMap } from '../../utils/domainColors'
+import { MUTATION_COLORS, MUTATION_LABELS } from '../../utils/mutationConstants'
 
 interface LollipopPlotProps {
   data: VisualizationData
@@ -12,30 +13,10 @@ interface LollipopPlotProps {
   onSvgReady?: (svg: string) => void
 }
 
-// Color scheme for mutation types (matching ProteinPaint style)
-const MUTATION_COLORS: Record<MutationType, string> = {
-  missense: '#3B82F6',    // Blue
-  nonsense: '#EF4444',    // Red
-  frameshift: '#F97316',  // Orange
-  silent: '#10B981',      // Green
-  splice: '#8B5CF6',      // Purple
-  inframe_indel: '#EC4899', // Pink
-  other: '#6B7280',       // Gray
-}
-
-const MUTATION_LABELS: Record<MutationType, string> = {
-  missense: 'Missense',
-  nonsense: 'Nonsense',
-  frameshift: 'Frameshift',
-  silent: 'Silent',
-  splice: 'Splice',
-  inframe_indel: 'In-frame Indel',
-  other: 'Other',
-}
-
-export default function LollipopPlot({ data, mutations, height = 300, domainColorMap, onSvgReady }: LollipopPlotProps) {
+export default function LollipopPlot({ data, mutations, height = 400, domainColorMap, onSvgReady }: LollipopPlotProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
+  const isSettingTransform = useRef(false)
   const { theme } = useTheme()
   const [tooltip, setTooltip] = useState<{
     visible: boolean
@@ -46,6 +27,7 @@ export default function LollipopPlot({ data, mutations, height = 300, domainColo
   const [visibleTypes, setVisibleTypes] = useState<Set<MutationType>>(
     new Set(['missense', 'nonsense', 'frameshift', 'silent', 'splice', 'inframe_indel', 'other'])
   )
+  const [zoomDomain, setZoomDomain] = useState<[number, number] | null>(null)
 
   // Create local color map if not provided, pre-populated with all domains
   const localColorMap = useMemo(() => {
@@ -56,16 +38,9 @@ export default function LollipopPlot({ data, mutations, height = 300, domainColo
     return map
   }, [data, domainColorMap])
 
-  // Group mutations by position for stacking
-  const groupedMutations = useMemo(() => {
-    const groups: Record<number, MutationInfo[]> = {}
-    mutations
-      .filter(m => visibleTypes.has(m.type))
-      .forEach(m => {
-        if (!groups[m.position]) groups[m.position] = []
-        groups[m.position].push(m)
-      })
-    return groups
+  // Filter mutations by visible types
+  const filteredMutations = useMemo(() => {
+    return mutations.filter(m => visibleTypes.has(m.type))
   }, [mutations, visibleTypes])
 
   // Count by type for legend
@@ -78,12 +53,14 @@ export default function LollipopPlot({ data, mutations, height = 300, domainColo
     return counts
   }, [mutations])
 
+  const isZoomed = zoomDomain !== null
+
   useEffect(() => {
     if (!svgRef.current || !containerRef.current) return
 
     const container = containerRef.current
     const width = container.clientWidth
-    const margin = { top: 100, right: 40, bottom: 80, left: 40 }
+    const margin = { top: 40, right: 40, bottom: 100, left: 70 }
     const innerWidth = width - margin.left - margin.right
     const innerHeight = height - margin.top - margin.bottom
 
@@ -96,19 +73,46 @@ export default function LollipopPlot({ data, mutations, height = 300, domainColo
 
     const textColor = theme === 'dark' ? '#F3F4F6' : '#1F2937'
     const bgColor = theme === 'dark' ? '#374151' : '#F3F4F6'
+    const gridColor = theme === 'dark' ? '#4B5563' : '#E5E7EB'
 
-    // Scale for protein positions
+    // === Scales ===
+    const xDomain: [number, number] = zoomDomain || [0, data.total_length]
     const xScale = d3.scaleLinear()
-      .domain([0, data.total_length])
+      .domain(xDomain)
       .range([0, innerWidth])
 
-    // === Draw protein backbone with domains ===
+    // Y-axis: gnomAD allele frequency (linear scale 0-1, like ProteinPaint)
+    const yScale = d3.scaleLinear()
+      .domain([0, 1])
+      .range([innerHeight - 40, 0])  // Leave room for protein backbone at bottom
+      .clamp(true)
+
+    // === Clip path for zoomed content ===
+    svg.append('defs').append('clipPath')
+      .attr('id', 'lollipop-clip')
+      .append('rect')
+      .attr('width', innerWidth)
+      .attr('height', innerHeight + 20)
+      .attr('x', 0)
+      .attr('y', -10)
+
+    // Zoom overlay rect — drawn first so lollipops render on top
+    const zoomRect = g.append('rect')
+      .attr('width', innerWidth)
+      .attr('height', innerHeight)
+      .attr('fill', 'transparent')
+      .style('cursor', isZoomed ? 'grab' : 'default')
+
+    const clippedG = g.append('g')
+      .attr('clip-path', 'url(#lollipop-clip)')
+
+    // === Draw protein backbone with domains (at the bottom) ===
     const proteinY = innerHeight - 20
     const domainHeight = 24
 
     // Protein backbone
-    g.append('rect')
-      .attr('x', 0)
+    clippedG.append('rect')
+      .attr('x', xScale(xDomain[0]))
       .attr('y', proteinY - domainHeight / 2)
       .attr('width', innerWidth)
       .attr('height', domainHeight)
@@ -131,10 +135,9 @@ export default function LollipopPlot({ data, mutations, height = 300, domainColo
       const x1 = xScale(domain.start)
       const x2 = xScale(domain.end)
       const domainWidth = Math.max(x2 - x1, 3)
-      // Use consistent domain colors from shared color map
       const color = domain.is_kinase ? '#EF4444' : localColorMap.getColor(domain.name)
 
-      g.append('rect')
+      clippedG.append('rect')
         .attr('x', x1)
         .attr('y', proteinY - domainHeight / 2)
         .attr('width', domainWidth)
@@ -146,101 +149,165 @@ export default function LollipopPlot({ data, mutations, height = 300, domainColo
 
     // Junction marker
     const junctionX = xScale(data.junction_position)
-    g.append('line')
+    clippedG.append('line')
       .attr('x1', junctionX)
-      .attr('y1', proteinY - domainHeight - 5)
+      .attr('y1', 0)
       .attr('x2', junctionX)
-      .attr('y2', proteinY + domainHeight + 5)
+      .attr('y2', innerHeight)
       .attr('stroke', '#EF4444')
       .attr('stroke-width', 2)
       .attr('stroke-dasharray', '4,2')
+      .attr('opacity', 0.6)
 
-    // === Draw lollipops ===
-    const lollipopRadius = 8
+    // === Draw Y-axis grid lines ===
+    const yAxisTicks = yScale.ticks(5)
+    yAxisTicks.forEach(tick => {
+      g.append('line')
+        .attr('x1', 0)
+        .attr('x2', innerWidth)
+        .attr('y1', yScale(tick))
+        .attr('y2', yScale(tick))
+        .attr('stroke', gridColor)
+        .attr('stroke-width', 0.5)
+        .attr('stroke-dasharray', '2,2')
+    })
 
-    Object.entries(groupedMutations).forEach(([posStr, muts]) => {
-      const pos = parseInt(posStr)
-      const x = xScale(pos)
+    // === Draw lollipops with rotated labels (ProteinPaint style) ===
+    const lollipopRadius = 5
 
-      // Sort mutations by type for consistent stacking
-      muts.sort((a, b) => {
-        const order = ['nonsense', 'frameshift', 'missense', 'splice', 'inframe_indel', 'silent', 'other']
-        return order.indexOf(a.type) - order.indexOf(b.type)
+    // Sort mutations by position for label collision detection
+    const sortedMutations = [...filteredMutations]
+      .filter(m => m.position >= xDomain[0] && m.position <= xDomain[1])
+      .sort((a, b) => a.position - b.position)
+
+    // Track placed label positions for collision detection
+    // Each entry: { x, y } of the label anchor point
+    const placedLabels: { x: number; y: number }[] = []
+    const labelMinDist = 12 // Minimum pixel distance between label anchors
+
+    sortedMutations.forEach((mut) => {
+      const x = xScale(mut.position)
+      // Use gnomAD AF for y-position, or place at y=0 if no AF
+      const hasAF = mut.gnomad_af != null && mut.gnomad_af >= 0
+      const y = hasAF ? yScale(mut.gnomad_af!) : yScale(0)
+      const color = MUTATION_COLORS[mut.type]
+
+      // Stem from backbone to lollipop
+      clippedG.append('line')
+        .attr('x1', x)
+        .attr('y1', proteinY - domainHeight / 2)
+        .attr('x2', x)
+        .attr('y2', y)
+        .attr('stroke', color)
+        .attr('stroke-width', 1)
+        .attr('opacity', 0.5)
+
+      // Lollipop head
+      const radius = lollipopRadius
+
+      const circle = clippedG.append('circle')
+        .attr('cx', x)
+        .attr('cy', y)
+        .attr('r', radius)
+        .attr('fill', color)
+        .attr('stroke', theme === 'dark' ? '#1F2937' : 'white')
+        .attr('stroke-width', 1)
+        .style('cursor', 'pointer')
+
+      // Rotated label near the dot — only show if no collision
+      const labelAngle = -60
+      const labelOffset = radius + 3
+      const labelX = x + labelOffset
+      const labelY = y
+
+      const hasCollision = placedLabels.some(p => {
+        const dx = p.x - labelX
+        const dy = p.y - labelY
+        return Math.sqrt(dx * dx + dy * dy) < labelMinDist
       })
 
-      muts.forEach((mut, i) => {
-        const y = proteinY - domainHeight - 15 - (i * (lollipopRadius * 2 + 4))
-        const color = MUTATION_COLORS[mut.type]
-
-        // Stem
-        if (i === 0) {
-          g.append('line')
-            .attr('x1', x)
-            .attr('y1', proteinY - domainHeight / 2)
-            .attr('x2', x)
-            .attr('y2', y)
-            .attr('stroke', color)
-            .attr('stroke-width', 1.5)
-        }
-
-        // Lollipop head
-        const circle = g.append('circle')
-          .attr('cx', x)
-          .attr('cy', y)
-          .attr('r', mut.count && mut.count > 1 ? lollipopRadius + Math.min(mut.count, 10) : lollipopRadius)
+      if (!hasCollision) {
+        clippedG.append('text')
+          .attr('x', labelX)
+          .attr('y', labelY)
+          .attr('text-anchor', 'start')
+          .attr('transform', `rotate(${labelAngle}, ${labelX}, ${labelY})`)
           .attr('fill', color)
-          .attr('stroke', theme === 'dark' ? '#1F2937' : 'white')
-          .attr('stroke-width', 2)
-          .style('cursor', 'pointer')
+          .attr('font-size', '8px')
+          .attr('font-weight', '500')
+          .attr('pointer-events', 'none')
+          .text(mut.label)
+        placedLabels.push({ x: labelX, y: labelY })
+      }
 
-        // Count label inside circle (for mutations with count > 1)
-        if (mut.count && mut.count > 1) {
-          g.append('text')
-            .attr('x', x)
-            .attr('y', y + 4)
-            .attr('text-anchor', 'middle')
-            .attr('fill', 'white')
-            .attr('font-size', '10px')
-            .attr('font-weight', 'bold')
-            .attr('pointer-events', 'none')
-            .text(mut.count > 99 ? '99+' : mut.count)
-        }
-
-        // Mutation label above
-        if (muts.length <= 3 || i === muts.length - 1) {
-          g.append('text')
-            .attr('x', x)
-            .attr('y', y - lollipopRadius - 5)
-            .attr('text-anchor', 'middle')
-            .attr('fill', color)
-            .attr('font-size', '10px')
-            .attr('font-weight', 'bold')
-            .text(mut.label)
-        }
-
-        // Tooltip events
-        circle.on('mouseenter', function(event) {
-          d3.select(this).attr('r', (mut.count && mut.count > 1 ? lollipopRadius + Math.min(mut.count, 10) : lollipopRadius) + 2)
-          const rect = (event.target as SVGCircleElement).getBoundingClientRect()
-          const containerRect = container.getBoundingClientRect()
-          setTooltip({
-            visible: true,
-            x: rect.left - containerRect.left + rect.width / 2,
-            y: rect.top - containerRect.top - 10,
-            mutation: mut
-          })
+      // Tooltip events (always active, even when label is hidden)
+      circle.on('mouseenter', function(event) {
+        d3.select(this).attr('r', radius + 2)
+        const rect = (event.target as SVGCircleElement).getBoundingClientRect()
+        const containerRect = container.getBoundingClientRect()
+        setTooltip({
+          visible: true,
+          x: rect.left - containerRect.left + rect.width / 2,
+          y: rect.top - containerRect.top - 10,
+          mutation: mut
         })
-        circle.on('mouseleave', function() {
-          d3.select(this).attr('r', mut.count && mut.count > 1 ? lollipopRadius + Math.min(mut.count, 10) : lollipopRadius)
-          setTooltip(prev => ({ ...prev, visible: false }))
-        })
+      })
+      circle.on('mouseleave', function() {
+        d3.select(this).attr('r', radius)
+        setTooltip(prev => ({ ...prev, visible: false }))
       })
     })
 
-    // === Axis ===
+    // === Zoom & Pan (applied to background rect so lollipops stay interactive) ===
+    const fullDomain: [number, number] = [0, data.total_length]
+    const baseXScale = d3.scaleLinear().domain(fullDomain).range([0, innerWidth])
+    const zoom = d3.zoom<SVGRectElement, unknown>()
+      .scaleExtent([1, 50])
+      .translateExtent([[0, 0], [innerWidth, innerHeight]])
+      .extent([[0, 0], [innerWidth, innerHeight]])
+      .on('zoom', (event) => {
+        if (isSettingTransform.current) return
+        const transform = event.transform
+        const newXScale = transform.rescaleX(baseXScale.copy())
+        const newDomain: [number, number] = [
+          Math.max(fullDomain[0], Math.round(newXScale.domain()[0])),
+          Math.min(fullDomain[1], Math.round(newXScale.domain()[1]))
+        ]
+        if (newDomain[1] - newDomain[0] >= 5) {
+          if (transform.k <= 1.01) {
+            setZoomDomain(null)
+          } else {
+            setZoomDomain(newDomain)
+          }
+        }
+      });
+
+    // Apply zoom to the background rect (not the SVG) so circles stay hoverable
+    (zoomRect as unknown as d3.Selection<SVGRectElement, unknown, null, undefined>).call(zoom)
+
+    // Restore transform to match current zoom domain (without triggering handler)
+    if (zoomDomain) {
+      const k = data.total_length / (zoomDomain[1] - zoomDomain[0])
+      const tx = -zoomDomain[0] * (innerWidth / data.total_length) * k
+      isSettingTransform.current = true;
+      (zoomRect as unknown as d3.Selection<SVGRectElement, unknown, null, undefined>)
+        .call(zoom.transform, d3.zoomIdentity.translate(tx, 0).scale(k))
+      isSettingTransform.current = false
+    }
+
+    // Double-click to reset
+    zoomRect.on('dblclick.zoom', () => {
+      isSettingTransform.current = true;
+      (zoomRect as unknown as d3.Selection<SVGRectElement, unknown, null, undefined>)
+        .call(zoom.transform, d3.zoomIdentity)
+      isSettingTransform.current = false
+      setZoomDomain(null)
+    })
+
+    // === X-Axis (bottom, below backbone) ===
     const xAxis = d3.axisBottom(xScale).ticks(10)
     g.append('g')
-      .attr('transform', `translate(0,${proteinY + domainHeight / 2 + 10})`)
+      .attr('transform', `translate(0,${innerHeight})`)
       .call(xAxis)
       .selectAll('text')
       .attr('fill', textColor)
@@ -248,16 +315,36 @@ export default function LollipopPlot({ data, mutations, height = 300, domainColo
 
     g.append('text')
       .attr('x', innerWidth / 2)
-      .attr('y', proteinY + domainHeight / 2 + 40)
+      .attr('y', innerHeight + 35)
       .attr('text-anchor', 'middle')
       .attr('fill', textColor)
       .attr('font-size', '11px')
       .text('Amino acid position')
 
+    // === Y-Axis (left, gnomAD_AF) - Linear scale 0-1 like ProteinPaint ===
+    const yAxis = d3.axisLeft(yScale)
+      .tickValues([0, 0.2, 0.4, 0.6, 0.8, 1.0])
+      .tickFormat(d => d3.format('.1f')(d as number))
+
+    g.append('g')
+      .call(yAxis)
+      .selectAll('text')
+      .attr('fill', textColor)
+      .attr('font-size', '9px')
+
+    g.append('text')
+      .attr('transform', 'rotate(-90)')
+      .attr('x', -(innerHeight - 40) / 2)
+      .attr('y', -55)
+      .attr('text-anchor', 'middle')
+      .attr('fill', textColor)
+      .attr('font-size', '11px')
+      .text('gnomAD_AF')
+
     // === Title ===
     g.append('text')
       .attr('x', innerWidth / 2)
-      .attr('y', -margin.top + 20)
+      .attr('y', -15)
       .attr('text-anchor', 'middle')
       .attr('fill', textColor)
       .attr('font-size', '14px')
@@ -271,7 +358,7 @@ export default function LollipopPlot({ data, mutations, height = 300, domainColo
       onSvgReady(serializer.serializeToString(svgClone))
     }
 
-  }, [data, groupedMutations, theme, height, localColorMap, onSvgReady])
+  }, [data, filteredMutations, theme, height, localColorMap, onSvgReady, zoomDomain])
 
   const toggleType = (type: MutationType) => {
     setVisibleTypes(prev => {
@@ -287,6 +374,28 @@ export default function LollipopPlot({ data, mutations, height = 300, domainColo
 
   return (
     <div className="relative">
+      {/* Zoom controls */}
+      {isZoomed && (
+        <div className="absolute top-2 right-2 z-10 flex gap-2">
+          <span className="text-xs text-gray-500 dark:text-gray-400 self-center">
+            Viewing AA {zoomDomain![0]}–{zoomDomain![1]}
+          </span>
+          <button
+            onClick={() => setZoomDomain(null)}
+            className="px-2 py-1 text-xs bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded hover:bg-gray-200 dark:hover:bg-gray-600 border border-gray-300 dark:border-gray-600"
+          >
+            Reset Zoom
+          </button>
+        </div>
+      )}
+      {!isZoomed && (
+        <div className="absolute top-2 right-2 z-10">
+          <span className="text-xs text-gray-400 dark:text-gray-500">
+            Scroll to zoom, drag to pan
+          </span>
+        </div>
+      )}
+
       <div ref={containerRef} className="relative">
         <svg ref={svgRef} className="w-full" />
 
@@ -300,6 +409,11 @@ export default function LollipopPlot({ data, mutations, height = 300, domainColo
             <div className="mt-1 space-y-0.5">
               <div>Position: {tooltip.mutation.position}</div>
               <div>Type: {MUTATION_LABELS[tooltip.mutation.type]}</div>
+              {tooltip.mutation.gnomad_af != null && (
+                <div>gnomAD_AF: {tooltip.mutation.gnomad_af >= 0.01
+                  ? tooltip.mutation.gnomad_af.toFixed(6)
+                  : tooltip.mutation.gnomad_af.toExponential(2)}</div>
+              )}
               {tooltip.mutation.count && <div>Count: {tooltip.mutation.count}</div>}
               {tooltip.mutation.source && <div>Source: {tooltip.mutation.source}</div>}
               {tooltip.mutation.clinical_significance && (
@@ -347,7 +461,7 @@ export default function LollipopPlot({ data, mutations, height = 300, domainColo
   )
 }
 
-// Demo/sample mutations for testing
+// Demo/sample mutations for testing (without gnomAD AF - that comes from real API)
 export function generateSampleMutations(proteinLength: number): MutationInfo[] {
   const types: MutationType[] = ['missense', 'nonsense', 'frameshift', 'silent', 'splice', 'inframe_indel']
   const aminoAcids = 'ACDEFGHIKLMNPQRSTVWY'.split('')
@@ -372,7 +486,8 @@ export function generateSampleMutations(proteinLength: number): MutationInfo[] {
       type,
       label,
       count: Math.random() > 0.7 ? Math.floor(Math.random() * 20) + 2 : 1,
-      source: ['COSMIC', 'ClinVar', 'GDC'][Math.floor(Math.random() * 3)]
+      source: ['COSMIC', 'ClinVar'][Math.floor(Math.random() * 2)]
+      // gnomad_af comes from real API data, not generated
     })
   }
 
